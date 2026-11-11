@@ -6,7 +6,6 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlin.random.Random
 
 class DoomEngine {
@@ -66,9 +65,10 @@ class DoomEngine {
     // Keys
     val keys = mutableSetOf<KeyCard>()
 
-    // Entities & Doors
+    // Entities, Doors & Connected Secret Groups
     val doors = mutableMapOf<Int, DoorState>() // key = y * gridSize + x
-    val secretFloorSet = mutableSetOf<Int>() // key = y * gridSize + x
+    val cellToSecretGroup = mutableMapOf<Int, Int>() // key = y * gridSize + x -> groupId
+    val discoveredSecretGroups = mutableSetOf<Int>()
     val monsters = mutableListOf<MonsterEntity>()
     val items = mutableListOf<MapItemEntity>()
     val projectiles = mutableListOf<ProjectileEntity>()
@@ -151,7 +151,8 @@ class DoomEngine {
         completedLevelStats = null
 
         doors.clear()
-        secretFloorSet.clear()
+        cellToSecretGroup.clear()
+        discoveredSecretGroups.clear()
         monsters.clear()
         items.clear()
         projectiles.clear()
@@ -161,6 +162,8 @@ class DoomEngine {
         secretsCount = 0
         totalSecrets = 0
         levelTimeSec = 0f
+
+        val rawSecretCells = mutableListOf<Pair<Int, Int>>()
 
         for (y in 0 until gridSize) {
             val rowStr = def.rawAsciiRows.getOrNull(y) ?: "####################"
@@ -173,13 +176,38 @@ class DoomEngine {
                 if (t in 6..10) {
                     val isSec = (t == 10)
                     doors[cellKey] = DoorState(x, y, t, isSec)
-                    if (isSec) totalSecrets++
+                    if (isSec) rawSecretCells.add(x to y)
                 } else if (t == 14) {
-                    secretFloorSet.add(cellKey)
-                    totalSecrets++
+                    rawSecretCells.add(x to y)
                 }
             }
         }
+
+        // Group connected secret push-walls ('S' = 10) and secret floor alcoves ('?' = 14) into single secrets
+        val visited = BooleanArray(rawSecretCells.size)
+        var groupCounter = 0
+        for (i in rawSecretCells.indices) {
+            if (visited[i]) continue
+            val queue = ArrayDeque<Int>()
+            queue.add(i)
+            visited[i] = true
+            while (queue.isNotEmpty()) {
+                val curIdx = queue.removeFirst()
+                val (cx, cy) = rawSecretCells[curIdx]
+                cellToSecretGroup[cy * gridSize + cx] = groupCounter
+                for (j in rawSecretCells.indices) {
+                    if (!visited[j]) {
+                        val (nx, ny) = rawSecretCells[j]
+                        if (abs(cx - nx) + abs(cy - ny) <= 2) {
+                            visited[j] = true
+                            queue.add(j)
+                        }
+                    }
+                }
+            }
+            groupCounter++
+        }
+        totalSecrets = groupCounter
 
         var mId = 1
         for (mDef in def.monsters) {
@@ -208,6 +236,32 @@ class DoomEngine {
 
         markExploredAroundPlayer()
         showBanner("${def.code}: ${def.title}")
+    }
+
+    private fun markSecretGroupDiscovered(groupId: Int) {
+        if (!discoveredSecretGroups.add(groupId)) return
+        secretsCount++
+        totalScore += 500
+        pickupFlashTimer = 0.35f
+        for ((cellKey, gId) in cellToSecretGroup) {
+            if (gId == groupId) {
+                val gx = cellKey % gridSize
+                val gy = cellKey / gridSize
+                if (grid[gy][gx] == 14) {
+                    grid[gy][gx] = 0
+                }
+                doors[cellKey]?.secretDiscovered = true
+            }
+        }
+        showBanner("Byla objevena tajná skrýš! ($secretsCount/$totalSecrets)")
+        DoomAudioManager.playSound(DoomSoundEffect.SECRET_FOUND)
+        PlatformServices.triggerHaptic(heavy = true)
+    }
+
+    fun isSecretCellRevealedOnMap(gx: Int, gy: Int): Boolean {
+        if (hasComputerMap || fullMapCheat) return true
+        val gId = cellToSecretGroup[gy * gridSize + gx] ?: return false
+        return discoveredSecretGroups.contains(gId)
     }
 
     fun showBanner(msg: String) {
@@ -350,12 +404,10 @@ class DoomEngine {
         }
 
         if (!isPlayerDead) {
-            // Turning
             playerAngle += turnDelta
             while (playerAngle > PI.toFloat()) playerAngle -= (2.0 * PI).toFloat()
             while (playerAngle < -PI.toFloat()) playerAngle += (2.0 * PI).toFloat()
 
-            // Movement
             val moveSpeed = 4.2f
             val dirX = cos(playerAngle)
             val dirY = sin(playerAngle)
@@ -437,7 +489,6 @@ class DoomEngine {
             }
         }
 
-        // Solid decorative obstacles & intact barrels
         for (item in items) {
             if (!item.collected && item.type.isSolidObstacle && item.barrelHp > 0) {
                 if (hypot(x - item.x, y - item.y) < radius + 0.26f) return false
@@ -474,19 +525,11 @@ class DoomEngine {
         val tile = grid[gy][gx]
         val cellKey = gy * gridSize + gx
 
-        // Secret Floor Sector ('?')
-        if (tile == 14 && secretFloorSet.contains(cellKey)) {
-            secretFloorSet.remove(cellKey)
-            grid[gy][gx] = 0
-            secretsCount++
-            totalScore += 500
-            pickupFlashTimer = 0.35f
-            showBanner("Byla objevena tajná oblast! ($secretsCount/$totalSecrets)")
-            DoomAudioManager.playSound(DoomSoundEffect.SECRET_FOUND)
-            PlatformServices.triggerHaptic(heavy = true)
+        val secretGroup = cellToSecretGroup[cellKey]
+        if (secretGroup != null && !discoveredSecretGroups.contains(secretGroup)) {
+            markSecretGroupDiscovered(secretGroup)
         }
 
-        // Teleporter Pad ('T')
         if (tile == 15 && teleportFlashTimer <= 0f) {
             val pair = currentMapDef.teleporters.firstOrNull { it.fromX == gx && it.fromY == gy }
             if (pair != null) {
@@ -499,7 +542,6 @@ class DoomEngine {
             }
         }
 
-        // Radioactive Acid Slime ('~')
         if (tile == 13) {
             acidTickTimer += dt
             if (acidTickTimer >= 0.95f) {
@@ -716,9 +758,6 @@ class DoomEngine {
         }
     }
 
-    /**
-     * Player presses USE ('AKCE / OTEVŘÍT') in front of doors, secret push-walls, or exit switches.
-     */
     fun triggerUseAction() {
         if (isPlayerDead || completedLevelStats != null) return
         val dirX = cos(playerAngle)
@@ -733,7 +772,6 @@ class DoomEngine {
             val tile = grid[ty][tx]
             val cellKey = ty * gridSize + tx
 
-            // Normal or Locked Doors (6..9) and Secret Push-Wall (10)
             if (tile in 6..10) {
                 val door = doors[cellKey] ?: continue
                 when (tile) {
@@ -754,14 +792,9 @@ class DoomEngine {
                     }
                 }
 
-                if (door.isSecretPushWall && !door.secretDiscovered) {
-                    door.secretDiscovered = true
-                    secretsCount++
-                    totalScore += 500
-                    pickupFlashTimer = 0.35f
-                    showBanner("Byla objevena tajná skrýš! ($secretsCount/$totalSecrets)")
-                    DoomAudioManager.playSound(DoomSoundEffect.SECRET_FOUND)
-                    PlatformServices.triggerHaptic(heavy = true)
+                val secretGroup = cellToSecretGroup[cellKey]
+                if (door.isSecretPushWall && secretGroup != null && !discoveredSecretGroups.contains(secretGroup)) {
+                    markSecretGroupDiscovered(secretGroup)
                 } else {
                     DoomAudioManager.playSound(DoomSoundEffect.DOOR_OPEN)
                 }
@@ -772,7 +805,6 @@ class DoomEngine {
                 return
             }
 
-            // Normal Exit Switch (11) or Secret Exit Switch (12)
             if (tile == 11 || tile == 12) {
                 DoomAudioManager.playSound(DoomSoundEffect.SWITCH_CLICK)
                 PlatformServices.triggerHaptic(heavy = true)
@@ -812,7 +844,6 @@ class DoomEngine {
         if (w.ammoType != AmmoType.NONE) {
             val curAmmo = ammo[w.ammoType] ?: 0
             if (curAmmo < w.ammoPerShot) {
-                // Auto-switch to best available weapon
                 val fallback = WeaponType.entries.reversed().firstOrNull {
                     ownedWeapons.contains(it) && (it.ammoType == AmmoType.NONE || (ammo[it.ammoType] ?: 0) >= it.ammoPerShot)
                 } ?: WeaponType.FIST
@@ -838,7 +869,6 @@ class DoomEngine {
             WeaponType.BFG_9000 -> DoomAudioManager.playSound(DoomSoundEffect.BFG_BLAST)
         }
 
-        // Alert nearby monsters by sound
         for (m in monsters) {
             if (m.state == MonsterState.IDLE && hypot(m.x - playerX, m.y - playerY) < 12f) {
                 m.state = MonsterState.CHASE
@@ -879,7 +909,6 @@ class DoomEngine {
             return
         }
 
-        // Hitscan or Melee pellets
         for (p in 0 until w.pellets) {
             val spread = if (w.pellets > 1) (Random.nextFloat() - 0.5f) * 0.16f else (Random.nextFloat() - 0.5f) * 0.03f
             val rayAngle = playerAngle + spread
@@ -905,7 +934,6 @@ class DoomEngine {
 
             if (isCellSolidForRay(gx, gy)) return
 
-            // Check shootable barrels
             for (item in items) {
                 if (!item.collected && item.type.isShootableBarrel && item.barrelHp > 0) {
                     if (hypot(rx - item.x, ry - item.y) <= 0.35f) {
@@ -915,7 +943,6 @@ class DoomEngine {
                 }
             }
 
-            // Check living monsters
             for (m in monsters) {
                 if (m.state != MonsterState.DYING && m.state != MonsterState.DEAD) {
                     if (hypot(rx - m.x, ry - m.y) <= m.type.radius + 0.08f) {
@@ -950,10 +977,9 @@ class DoomEngine {
         maxDamage: Int,
         attackerMonsterId: Int?
     ) {
-        // Damage nearby monsters
         for (m in monsters) {
             if (m.state != MonsterState.DYING && m.state != MonsterState.DEAD) {
-                if (m.type == MonsterType.CYBERDEMON) continue // Cyberdemon is immune to splash damage!
+                if (m.type == MonsterType.CYBERDEMON) continue
                 val d = hypot(m.x - cx, m.y - cy)
                 if (d <= radius) {
                     val dmg = (maxDamage * (1f - d / radius)).toInt().coerceAtLeast(10)
@@ -961,7 +987,6 @@ class DoomEngine {
                 }
             }
         }
-        // Chain reaction to other barrels
         for (item in items) {
             if (!item.collected && item.type.isShootableBarrel && item.barrelHp > 0) {
                 val d = hypot(item.x - cx, item.y - cy)
@@ -971,7 +996,6 @@ class DoomEngine {
                 }
             }
         }
-        // Splash damage to player if too close
         val playerDist = hypot(playerX - cx, playerY - cy)
         if (playerDist <= radius) {
             val pDmg = (maxDamage * 0.6f * (1f - playerDist / radius)).toInt()
@@ -981,9 +1005,6 @@ class DoomEngine {
         }
     }
 
-    /**
-     * Classic BFG 9000 secondary cone trace: 40 invisible rays from player in the direction of the blast!
-     */
     private fun triggerBfgConeRays() {
         for (m in monsters) {
             if (m.state == MonsterState.DYING || m.state == MonsterState.DEAD) continue
@@ -1006,7 +1027,6 @@ class DoomEngine {
         m.hp -= dmg
         m.state = MonsterState.CHASE
 
-        // Monster Infighting: if hit by another monster of a different species, retaliate against it!
         if (attackerMonsterId != null && attackerMonsterId != m.id) {
             val attacker = monsters.firstOrNull { it.id == attackerMonsterId }
             if (attacker != null && attacker.type != m.type && attacker.state != MonsterState.DEAD) {
@@ -1023,14 +1043,12 @@ class DoomEngine {
             totalScore += m.type.scoreValue
             DoomAudioManager.playSound(DoomSoundEffect.MONSTER_DEATH)
 
-            // Shotgun Guy drops a Shotgun, Zombieman drops an Ammo Clip!
             if (m.type == MonsterType.SHOTGUN_GUY) {
                 items.add(MapItemEntity(id = 9000 + m.id, type = ItemType.SHELL_4, x = m.x, y = m.y))
             } else if (m.type == MonsterType.ZOMBIEMAN) {
                 items.add(MapItemEntity(id = 9000 + m.id, type = ItemType.AMMO_CLIP, x = m.x, y = m.y))
             }
 
-            // If all bosses in E1M8 die, open the final exit door automatically!
             if (currentMapDef.code == "E1M8") {
                 val bossesAlive = monsters.any { it.type.isBoss && it.state != MonsterState.DYING && it.state != MonsterState.DEAD }
                 if (!bossesAlive) {
@@ -1086,7 +1104,6 @@ class DoomEngine {
             } else if (door.openAmount >= 1f && !door.isSecretPushWall) {
                 door.holdOpenTimer -= dt
                 if (door.holdOpenTimer <= 0f) {
-                    // Only close if player and monsters are not standing inside the doorway
                     val px = playerX.toInt()
                     val py = playerY.toInt()
                     val blockedByPlayer = (px == door.gridX && py == door.gridY)
@@ -1133,13 +1150,11 @@ class DoomEngine {
             val gx = p.x.toInt()
             val gy = p.y.toInt()
 
-            // Hit wall
             if (isCellSolidForRay(gx, gy)) {
                 detonateProjectile(p)
                 continue
             }
 
-            // Hit barrel
             var hitBarrel = false
             for (item in items) {
                 if (!item.collected && item.type.isShootableBarrel && item.barrelHp > 0) {
@@ -1153,7 +1168,6 @@ class DoomEngine {
             }
             if (hitBarrel) continue
 
-            // Hit monster
             var hitMonster = false
             for (m in monsters) {
                 if (m.state == MonsterState.DYING || m.state == MonsterState.DEAD) continue
@@ -1167,7 +1181,6 @@ class DoomEngine {
             }
             if (hitMonster) continue
 
-            // Hit player
             if (!p.fromPlayer && hypot(p.x - playerX, p.y - playerY) <= 0.36f) {
                 damagePlayer(p.directDamage, "Zásah projektilem démona!")
                 detonateProjectile(p)
@@ -1221,7 +1234,6 @@ class DoomEngine {
                 continue
             }
 
-            // Determine target (either another monster for Infighting, or the Player)
             val infightTarget = m.infightTargetMonsterId?.let { tid ->
                 monsters.firstOrNull { it.id == tid && it.state != MonsterState.DYING && it.state != MonsterState.DEAD }
             }
@@ -1246,7 +1258,6 @@ class DoomEngine {
 
             m.attackCooldown = (m.attackCooldown - dt).coerceAtLeast(0f)
 
-            // Melee attack check
             if (distToTarget <= 1.25f && m.type.meleeDamage > 0 && m.attackCooldown <= 0f) {
                 m.state = MonsterState.ATTACK
                 m.attackCooldown = 0.95f
@@ -1258,7 +1269,6 @@ class DoomEngine {
                 continue
             }
 
-            // Ranged attack check
             if (canSeeTarget && distToTarget in 1.3f..13.5f && m.attackCooldown <= 0f &&
                 (m.type.isHitscan || m.type.hasProjectile)
             ) {
@@ -1270,7 +1280,6 @@ class DoomEngine {
                 }
             }
 
-            // Move toward target
             m.state = MonsterState.CHASE
             val angle = atan2(targetY - m.y, targetX - m.x)
             val speed = m.type.speed * difficulty.monsterSpeedMult

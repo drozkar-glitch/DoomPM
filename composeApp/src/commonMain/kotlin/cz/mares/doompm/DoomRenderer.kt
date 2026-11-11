@@ -8,15 +8,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
-import kotlin.math.hypot
 import kotlin.math.sin
 
 object DoomRenderer {
-    private const val NUM_RAYS = 150
+    private const val NUM_RAYS = 160
     private val zBuffer = FloatArray(NUM_RAYS)
 
     fun DrawScope.render3DView(engine: DoomEngine) {
@@ -28,14 +26,14 @@ object DoomRenderer {
         val mapDef = engine.currentMapDef
         val isInvuln = engine.invulnerableTimer > 0f
 
-        // 1. Sky and Floor background
+        // 1. Sky / Ceiling and Shaded Floor
         if (isInvuln) {
-            drawRect(color = Color(0xFFD8D8D8), topLeft = Offset.Zero, size = Size(w, halfH))
+            drawRect(color = Color(0xFFDCDCDC), topLeft = Offset.Zero, size = Size(w, halfH))
             drawRect(color = Color(0xFF9E9E9E), topLeft = Offset(0f, halfH), size = Size(w, halfH))
         } else {
             drawRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color(mapDef.skyColorTop), Color(mapDef.skyColorBottom)),
+                    colors = listOf(Color(mapDef.skyColorTop), Color(mapDef.skyColorBottom), Color(0xFF14171C)),
                     startY = 0f,
                     endY = halfH
                 ),
@@ -44,7 +42,7 @@ object DoomRenderer {
             )
             drawRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF141619), Color(mapDef.floorColor)),
+                    colors = listOf(Color(0xFF101215), Color(mapDef.floorColor)),
                     startY = halfH,
                     endY = h
                 ),
@@ -53,7 +51,6 @@ object DoomRenderer {
             )
         }
 
-        // Camera vectors (FOV ~ 66 degrees)
         val dirX = cos(engine.playerAngle)
         val dirY = sin(engine.playerAngle)
         val planeScale = 0.66f
@@ -62,7 +59,7 @@ object DoomRenderer {
 
         val colWidth = w / NUM_RAYS.toFloat()
 
-        // 2. DDA Raycasting for Walls, Doors, Switches & Floor Specials
+        // 2. DDA Raycasting
         for (col in 0 until NUM_RAYS) {
             val cameraX = 2f * col.toFloat() / NUM_RAYS.toFloat() - 1f
             val rayDirX = dirX + planeX * cameraX
@@ -160,22 +157,21 @@ object DoomRenderer {
             val xLeft = col * colWidth
             val sliceW = colWidth + 1.2f
 
-            // Draw glowing acid or teleporter floor highlight in front of wall if seen along ray
             if (sawAcidFloor && acidDist > 0.35f && !isInvuln) {
                 val acidLineH = h / acidDist
-                val acidY = (halfH + acidLineH * 0.45f).coerceIn(drawEnd, h)
+                val acidY = (halfH + acidLineH * 0.48f).coerceIn(drawEnd, h)
                 val pulse = (sin(engine.levelTimeSec * 4.5f + col * 0.2f) * 0.15f + 0.85f)
                 drawRect(
-                    color = Color(0f, (0.62f * pulse).coerceIn(0f, 1f), 0.15f, 0.78f),
+                    color = Color(0f, (0.68f * pulse).coerceIn(0f, 1f), 0.18f, 0.82f),
                     topLeft = Offset(xLeft, drawEnd),
                     size = Size(sliceW, (acidY - drawEnd).coerceAtLeast(4f))
                 )
             }
             if (sawTeleporter && teleDist > 0.35f && !isInvuln) {
                 val teleLineH = h / teleDist
-                val teleY = (halfH + teleLineH * 0.45f).coerceIn(drawEnd, h)
+                val teleY = (halfH + teleLineH * 0.48f).coerceIn(drawEnd, h)
                 drawRect(
-                    color = Color(0.95f, 0.15f, 0.2f, 0.8f),
+                    color = Color(0.95f, 0.15f, 0.2f, 0.85f),
                     topLeft = Offset(xLeft, drawEnd),
                     size = Size(sliceW, (teleY - drawEnd).coerceAtLeast(4f))
                 )
@@ -188,9 +184,8 @@ object DoomRenderer {
             }
             val wallU = rawWallX - floor(rawWallX)
 
-            // Distance & orientation shading
-            val distShade = (1f / (1f + perpWallDist * 0.11f)).coerceIn(0.18f, 1f)
-            val sideShade = if (side == 1) 0.78f else 1.0f
+            val distShade = (1f / (1f + perpWallDist * 0.10f)).coerceIn(0.18f, 1f)
+            val sideShade = if (side == 1) 0.76f else 1.0f
             val totalShade = distShade * sideShade
 
             drawWallColumn(
@@ -206,7 +201,7 @@ object DoomRenderer {
             )
         }
 
-        // 3. Render 2.5D Sprites (Items, Barrels, Projectiles, Monsters)
+        // 3. Render Sprites
         renderSprites(
             engine = engine,
             w = w,
@@ -220,12 +215,12 @@ object DoomRenderer {
             isInvuln = isInvuln
         )
 
-        // 4. First-Person Weapon with Walk Bobbing & Muzzle Flash
+        // 4. First-Person Weapon with Marine Gloves
         if (!engine.isPlayerDead) {
             renderFirstPersonWeapon(engine, w, h)
         }
 
-        // 5. Fullscreen Status Filters (Damage Red, Pickup Gold, RadSuit Green, Teleport Flash)
+        // 5. Screen Flash Effects
         if (engine.damageFlashTimer > 0f) {
             val alpha = (engine.damageFlashTimer * 0.85f).coerceIn(0f, 0.55f)
             drawRect(color = Color(1f, 0.08f, 0.05f, alpha), topLeft = Offset.Zero, size = Size(w, h))
@@ -242,11 +237,11 @@ object DoomRenderer {
             drawRect(color = Color(0.1f, 0.85f, 0.2f, 0.14f), topLeft = Offset.Zero, size = Size(w, h))
         }
 
-        // Center Crosshair
+        // Crosshair
         val cx = w * 0.5f
         val cy = halfH
-        drawLine(Color(0xAA00FF66), Offset(cx - 8f, cy), Offset(cx + 8f, cy), strokeWidth = 2f)
-        drawLine(Color(0xAA00FF66), Offset(cx, cy - 8f), Offset(cx, cy + 8f), strokeWidth = 2f)
+        drawLine(Color(0xBB00FF66), Offset(cx - 8f, cy), Offset(cx + 8f, cy), strokeWidth = 2f)
+        drawLine(Color(0xBB00FF66), Offset(cx, cy - 8f), Offset(cx, cy + 8f), strokeWidth = 2f)
     }
 
     private fun DrawScope.drawWallColumn(
@@ -275,20 +270,19 @@ object DoomRenderer {
             )
         }
 
-        // Base wall body
         val baseCol = when (tile) {
-            1 -> if (texX == 0 || texX == 15) shadedColor(55, 65, 75) else shadedColor(110, 122, 134)
-            2 -> if ((texX % 4) == 0) shadedColor(78, 74, 68) else shadedColor(118, 112, 102)
-            3 -> if ((texX % 4) == 0) shadedColor(90, 28, 28) else shadedColor(156, 42, 38)
-            4 -> shadedColor(76, 98, 78)
-            5 -> shadedColor(64, 78, 96)
-            6 -> if (texX in 7..8) shadedColor(48, 52, 58) else shadedColor(138, 144, 152)
-            7 -> if (texX in 1..2 || texX in 13..14) shadedColor(30, 130, 255) else shadedColor(95, 115, 145)
-            8 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 210, 20) else shadedColor(130, 120, 90)
-            9 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 40, 50) else shadedColor(140, 85, 85)
-            10 -> if (texX == 7) shadedColor(85, 95, 105) else shadedColor(114, 126, 138)
-            11 -> shadedColor(130, 50, 50)
-            12 -> shadedColor(115, 45, 150)
+            1 -> if (texX == 0 || texX == 8 || texX == 15) shadedColor(58, 68, 78) else shadedColor(118, 130, 142)
+            2 -> if ((texX % 4) == 0) shadedColor(76, 72, 65) else shadedColor(124, 116, 104)
+            3 -> if ((texX % 4) == 0) shadedColor(88, 24, 24) else shadedColor(164, 44, 38)
+            4 -> shadedColor(78, 104, 80)
+            5 -> shadedColor(62, 78, 98)
+            6 -> if (texX in 7..8) shadedColor(44, 48, 54) else shadedColor(142, 148, 156)
+            7 -> if (texX in 1..2 || texX in 13..14) shadedColor(35, 135, 255) else shadedColor(95, 115, 145)
+            8 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 215, 20) else shadedColor(135, 122, 92)
+            9 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 40, 50) else shadedColor(145, 85, 85)
+            10 -> if (texX == 7 || texX == 8) shadedColor(86, 98, 110) else shadedColor(116, 128, 140)
+            11 -> shadedColor(135, 52, 52)
+            12 -> shadedColor(120, 46, 155)
             else -> shadedColor(100, 100, 100)
         }
 
@@ -298,8 +292,7 @@ object DoomRenderer {
             size = Size(sliceW, totalH)
         )
 
-        // Top & Bottom trim bands for authentic 2.5D depth
-        val trimH = (totalH * 0.12f).coerceAtLeast(2f)
+        val trimH = (totalH * 0.11f).coerceAtLeast(2f)
         drawRect(
             color = shadedColor(42, 46, 52),
             topLeft = Offset(xLeft, drawStart),
@@ -311,41 +304,36 @@ object DoomRenderer {
             size = Size(sliceW, trimH)
         )
 
-        // Detailed mid-wall features per tile type
         when (tile) {
             1 -> {
-                // Tech wall horizontal seam + hazard stripe
                 drawRect(
-                    color = shadedColor(45, 52, 60),
+                    color = shadedColor(48, 55, 64),
                     topLeft = Offset(xLeft, drawStart + totalH * 0.48f),
                     size = Size(sliceW, (totalH * 0.05f).coerceAtLeast(1.5f))
                 )
             }
             3 -> {
-                // Hell brick mortar lines
                 drawRect(
-                    color = shadedColor(60, 18, 18),
+                    color = shadedColor(58, 16, 16),
                     topLeft = Offset(xLeft, drawStart + totalH * 0.33f),
                     size = Size(sliceW, (totalH * 0.04f).coerceAtLeast(1.5f))
                 )
                 drawRect(
-                    color = shadedColor(60, 18, 18),
+                    color = shadedColor(58, 16, 16),
                     topLeft = Offset(xLeft, drawStart + totalH * 0.66f),
                     size = Size(sliceW, (totalH * 0.04f).coerceAtLeast(1.5f))
                 )
             }
             4 -> {
-                // Toxic glowing green pipe in the middle of the wall
                 if (texX in 4..11) {
                     drawRect(
-                        color = shadedColor(40, 220, 75),
+                        color = shadedColor(42, 230, 80),
                         topLeft = Offset(xLeft, drawStart + totalH * 0.42f),
                         size = Size(sliceW, totalH * 0.16f)
                     )
                 }
             }
             5 -> {
-                // Blinking computer terminal LEDs
                 if (texX in 3..12 && texX % 2 == 0) {
                     val blink = ((timeSec * 4f + texX).toInt() % 2 == 0)
                     val ledCol = if (blink) shadedColor(40, 245, 120) else shadedColor(255, 180, 30)
@@ -357,12 +345,11 @@ object DoomRenderer {
                 }
             }
             6, 7, 8, 9 -> {
-                // Door horizontal warning bar
                 val barCol = when (tile) {
-                    7 -> shadedColor(30, 130, 255)
-                    8 -> shadedColor(255, 210, 20)
+                    7 -> shadedColor(30, 135, 255)
+                    8 -> shadedColor(255, 215, 20)
                     9 -> shadedColor(255, 45, 55)
-                    else -> shadedColor(195, 155, 45)
+                    else -> shadedColor(205, 160, 45)
                 }
                 drawRect(
                     color = barCol,
@@ -371,11 +358,10 @@ object DoomRenderer {
                 )
             }
             11, 12 -> {
-                // Exit Switch Box in the center of the wall
                 if (texX in 5..10) {
                     val swCol = if (tile == 12) shadedColor(255, 215, 0) else shadedColor(50, 250, 90)
                     drawRect(
-                        color = shadedColor(35, 35, 40),
+                        color = shadedColor(32, 32, 38),
                         topLeft = Offset(xLeft, drawStart + totalH * 0.32f),
                         size = Size(sliceW, totalH * 0.36f)
                     )
@@ -395,7 +381,7 @@ object DoomRenderer {
         val x: Float,
         val y: Float,
         val distSq: Float,
-        val kind: Int, // 1 = Monster, 2 = Item, 3 = Projectile
+        val kind: Int,
         val monster: MonsterEntity? = null,
         val item: MapItemEntity? = null,
         val projectile: ProjectileEntity? = null
@@ -432,7 +418,6 @@ object DoomRenderer {
             entries.add(SpriteRenderEntry(p.x, p.y, dx * dx + dy * dy, 3, projectile = p))
         }
 
-        // Painter's algorithm: sort far to near
         entries.sortByDescending { it.distSq }
 
         val invDet = 1.0f / (planeX * dirY - dirX * planeY)
@@ -444,7 +429,7 @@ object DoomRenderer {
             val transformX = invDet * (dirY * spriteX - dirX * spriteY)
             val transformY = invDet * (-planeY * spriteX + planeX * spriteY)
 
-            if (transformY <= 0.18f) continue // Behind camera
+            if (transformY <= 0.18f) continue
 
             val spriteScreenX = (w * 0.5f) * (1f + transformX / transformY)
             val baseSpriteH = abs(h / transformY)
@@ -452,7 +437,6 @@ object DoomRenderer {
             val centerCol = (spriteScreenX / colWidth).toInt()
             if (centerCol !in -25 until (NUM_RAYS + 25)) continue
 
-            // Check visibility across covered columns against zBuffer
             val halfCols = ((baseSpriteH * 0.45f) / colWidth).toInt().coerceAtLeast(1)
             val minCol = (centerCol - halfCols).coerceIn(0, NUM_RAYS - 1)
             val maxCol = (centerCol + halfCols).coerceIn(0, NUM_RAYS - 1)
@@ -487,23 +471,22 @@ object DoomRenderer {
         isInvuln: Boolean
     ) {
         val scale = when (m.type) {
-            MonsterType.CYBERDEMON -> 1.15f
-            MonsterType.BARON_OF_HELL -> 0.98f
-            MonsterType.CACODEMON -> 0.85f
-            MonsterType.LOST_SOUL -> 0.55f
-            else -> 0.82f
+            MonsterType.CYBERDEMON -> 1.18f
+            MonsterType.BARON_OF_HELL -> 1.00f
+            MonsterType.CACODEMON -> 0.86f
+            MonsterType.LOST_SOUL -> 0.56f
+            else -> 0.84f
         }
         val mh = baseH * scale
-        val mw = mh * 0.68f
+        val mw = mh * 0.70f
         val bottomY = halfH + baseH * 0.48f
 
         if (m.state == MonsterState.DEAD) {
-            // Bloody corpse on floor
             val corpseH = mh * 0.22f
             drawRoundRect(
-                color = Color(0.55f * shade, 0.08f * shade, 0.08f * shade),
-                topLeft = Offset(screenX - mw * 0.5f, bottomY - corpseH),
-                size = Size(mw, corpseH),
+                color = Color(0.58f * shade, 0.08f * shade, 0.08f * shade),
+                topLeft = Offset(screenX - mw * 0.52f, bottomY - corpseH),
+                size = Size(mw * 1.04f, corpseH),
                 cornerRadius = CornerRadius(corpseH * 0.4f, corpseH * 0.4f)
             )
             return
@@ -513,7 +496,7 @@ object DoomRenderer {
             val collapse = (m.stateTimer / 0.55f).coerceIn(0.2f, 1f)
             val curH = mh * collapse
             drawRoundRect(
-                color = Color(0.85f, 0.2f, 0.1f, 0.9f),
+                color = Color(0.88f, 0.2f, 0.1f, 0.92f),
                 topLeft = Offset(screenX - mw * 0.45f, bottomY - curH),
                 size = Size(mw * 0.9f, curH),
                 cornerRadius = CornerRadius(8f, 8f)
@@ -532,74 +515,106 @@ object DoomRenderer {
         val bodyColor = when {
             m.state == MonsterState.PAIN -> Color(1f, 0.9f, 0.9f, alpha)
             isInvuln -> Color(0.3f, 0.3f, 0.3f, alpha)
-            m.type == MonsterType.ZOMBIEMAN -> Color(0.45f * shade, 0.58f * shade, 0.38f * shade, alpha)
-            m.type == MonsterType.SHOTGUN_GUY -> Color(0.28f * shade, 0.30f * shade, 0.34f * shade, alpha)
-            m.type == MonsterType.IMP -> Color(0.58f * shade, 0.36f * shade, 0.20f * shade, alpha)
-            m.type == MonsterType.PINKY_DEMON -> Color(0.88f * shade, 0.42f * shade, 0.52f * shade, alpha)
+            m.type == MonsterType.ZOMBIEMAN -> Color(0.46f * shade, 0.58f * shade, 0.38f * shade, alpha)
+            m.type == MonsterType.SHOTGUN_GUY -> Color(0.26f * shade, 0.28f * shade, 0.32f * shade, alpha)
+            m.type == MonsterType.IMP -> Color(0.60f * shade, 0.36f * shade, 0.20f * shade, alpha)
+            m.type == MonsterType.PINKY_DEMON -> Color(0.90f * shade, 0.42f * shade, 0.52f * shade, alpha)
             m.type == MonsterType.SPECTRE -> Color(0.25f, 0.28f, 0.32f, 0.36f)
-            m.type == MonsterType.LOST_SOUL -> Color(0.95f, 0.65f, 0.18f, 0.92f)
-            m.type == MonsterType.CACODEMON -> Color(0.88f * shade, 0.16f * shade, 0.18f * shade, alpha)
-            m.type == MonsterType.BARON_OF_HELL -> Color(0.78f * shade, 0.28f * shade, 0.32f * shade, alpha)
+            m.type == MonsterType.LOST_SOUL -> Color(0.96f, 0.65f, 0.18f, 0.92f)
+            m.type == MonsterType.CACODEMON -> Color(0.90f * shade, 0.16f * shade, 0.18f * shade, alpha)
+            m.type == MonsterType.BARON_OF_HELL -> Color(0.80f * shade, 0.28f * shade, 0.32f * shade, alpha)
             m.type == MonsterType.CYBERDEMON -> Color(0.68f * shade, 0.38f * shade, 0.28f * shade, alpha)
             else -> Color.Red
         }
 
         if (m.type == MonsterType.CACODEMON) {
-            // Spherical floating Cacodemon with one green eye and blue mouth
             drawOval(
                 color = bodyColor,
                 topLeft = Offset(screenX - mw * 0.55f, topY),
                 size = Size(mw * 1.1f, mh * 0.95f)
             )
-            // Single green eye
+            // Horns
+            val hornPath = Path().apply {
+                moveTo(screenX - mw * 0.35f, topY + mh * 0.15f)
+                lineTo(screenX - mw * 0.48f, topY - mh * 0.10f)
+                lineTo(screenX - mw * 0.18f, topY + mh * 0.08f)
+                close()
+                moveTo(screenX + mw * 0.35f, topY + mh * 0.15f)
+                lineTo(screenX + mw * 0.48f, topY - mh * 0.10f)
+                lineTo(screenX + mw * 0.18f, topY + mh * 0.08f)
+                close()
+            }
+            drawPath(hornPath, Color(0xFFECEFF1))
             drawCircle(
                 color = Color(0xFF00FF66),
                 radius = mw * 0.16f,
-                center = Offset(screenX, topY + mh * 0.32f)
+                center = Offset(screenX, topY + mh * 0.34f)
             )
-            // Blue glowing mouth
             drawRoundRect(
                 color = Color(0xFF2979FF),
-                topLeft = Offset(screenX - mw * 0.32f, topY + mh * 0.58f),
+                topLeft = Offset(screenX - mw * 0.32f, topY + mh * 0.60f),
                 size = Size(mw * 0.64f, mh * 0.20f),
                 cornerRadius = CornerRadius(4f, 4f)
             )
         } else {
-            // Humanoid / Demon torso + head + legs
             val legW = mw * 0.28f
             val legH = mh * 0.35f
             val legSwing = sin(m.animPhase) * (legH * 0.2f)
-            // Left & Right legs
+            val rightLegCol = if (m.type == MonsterType.CYBERDEMON) Color(0xFF78909C) else bodyColor
+
             drawRect(
                 color = bodyColor,
                 topLeft = Offset(screenX - mw * 0.34f, bottomY - legH + legSwing),
                 size = Size(legW, legH)
             )
             drawRect(
-                color = bodyColor,
+                color = rightLegCol,
                 topLeft = Offset(screenX + mw * 0.06f, bottomY - legH - legSwing),
                 size = Size(legW, legH)
             )
-            // Torso
             drawRoundRect(
                 color = bodyColor,
                 topLeft = Offset(screenX - mw * 0.45f, topY + mh * 0.22f),
                 size = Size(mw * 0.90f, mh * 0.48f),
                 cornerRadius = CornerRadius(6f, 6f)
             )
-            // Head
             drawRoundRect(
                 color = bodyColor,
                 topLeft = Offset(screenX - mw * 0.26f, topY),
                 size = Size(mw * 0.52f, mh * 0.26f),
                 cornerRadius = CornerRadius(6f, 6f)
             )
-            // Glowing red/yellow eyes
+
+            // Horns for Baron, Cyberdemon, and Imp spikes
+            if (m.type == MonsterType.BARON_OF_HELL || m.type == MonsterType.CYBERDEMON || m.type == MonsterType.IMP) {
+                val hornCol = Color(0xFFD7CCC8)
+                drawLine(
+                    color = hornCol,
+                    start = Offset(screenX - mw * 0.20f, topY + mh * 0.04f),
+                    end = Offset(screenX - mw * 0.34f, topY - mh * 0.12f),
+                    strokeWidth = (mw * 0.08f).coerceAtLeast(2f)
+                )
+                drawLine(
+                    color = hornCol,
+                    start = Offset(screenX + mw * 0.20f, topY + mh * 0.04f),
+                    end = Offset(screenX + mw * 0.34f, topY - mh * 0.12f),
+                    strokeWidth = (mw * 0.08f).coerceAtLeast(2f)
+                )
+            }
+
+            // Weapon held by zombies / Cyberdemon rocket arm
+            if (m.type == MonsterType.ZOMBIEMAN || m.type == MonsterType.SHOTGUN_GUY || m.type == MonsterType.CYBERDEMON) {
+                drawRect(
+                    color = Color(0xFF455A64),
+                    topLeft = Offset(screenX - mw * 0.35f, topY + mh * 0.40f),
+                    size = Size(mw * 0.75f, mh * 0.12f)
+                )
+            }
+
             val eyeCol = if (m.type == MonsterType.BARON_OF_HELL) Color(0xFF00FF66) else Color(0xFFFF1744)
             drawCircle(eyeCol, radius = (mw * 0.06f).coerceAtLeast(1.5f), center = Offset(screenX - mw * 0.1f, topY + mh * 0.11f))
             drawCircle(eyeCol, radius = (mw * 0.06f).coerceAtLeast(1.5f), center = Offset(screenX + mw * 0.1f, topY + mh * 0.11f))
 
-            // Attack muzzle flash or plasma hands
             if (m.state == MonsterState.ATTACK) {
                 val flashCol = if (m.type == MonsterType.BARON_OF_HELL) Color(0xFF00FF66) else Color(0xFFFFAB00)
                 drawCircle(
@@ -610,7 +625,6 @@ object DoomRenderer {
             }
         }
 
-        // HP bar above damaged monsters
         if (m.hp < m.type.maxHp && m.hp > 0) {
             val barW = mw * 0.85f
             val barH = 4f
@@ -638,7 +652,6 @@ object DoomRenderer {
         val bottomY = halfH + baseH * 0.48f
         if (item.type == ItemType.BARREL) {
             if (item.barrelHp <= 0) {
-                // Exploding barrel fireball!
                 drawCircle(
                     color = Color(0xFFFF6D00),
                     radius = baseH * 0.35f,
@@ -659,7 +672,6 @@ object DoomRenderer {
                 size = Size(bw, bh),
                 cornerRadius = CornerRadius(4f, 4f)
             )
-            // Glowing green nukage top
             drawOval(
                 color = Color(0xFF00E676),
                 topLeft = Offset(screenX - bw * 0.42f, bottomY - bh),
@@ -686,7 +698,6 @@ object DoomRenderer {
             cornerRadius = CornerRadius(4f, 4f)
         )
 
-        // Red cross on Medikit & Stimpack
         if (item.type == ItemType.MEDIKIT || item.type == ItemType.STIMPACK) {
             drawRect(
                 color = Color(0xFFD50000),
@@ -724,16 +735,15 @@ object DoomRenderer {
     }
 
     private fun DrawScope.renderFirstPersonWeapon(engine: DoomEngine, w: Float, h: Float) {
-        val bobX = sin(engine.walkBobPhase) * 14f * engine.walkBobAmplitude
-        val bobY = abs(cos(engine.walkBobPhase)) * 10f * engine.walkBobAmplitude
+        val bobX = sin(engine.walkBobPhase) * 12f * engine.walkBobAmplitude
+        val bobY = abs(cos(engine.walkBobPhase)) * 9f * engine.walkBobAmplitude
         val recoilY = if (engine.weaponFlashTimer > 0f) 14f else 0f
 
         val cx = w * 0.5f + bobX
         val baseBottom = h + bobY + recoilY
-        val gunW = w * 0.22f
-        val gunH = h * 0.34f
+        val gunW = (minOf(w, h) * 0.30f).coerceAtLeast(68f)
+        val gunH = (h * 0.32f).coerceAtLeast(64f)
 
-        // Muzzle flash
         if (engine.weaponFlashTimer > 0f && !engine.currentWeapon.isMelee) {
             val flashColor = when (engine.currentWeapon) {
                 WeaponType.PLASMA_RIFLE -> Color(0xFF40C4FF)
@@ -742,15 +752,17 @@ object DoomRenderer {
             }
             drawCircle(
                 color = flashColor,
-                radius = gunW * 0.45f,
-                center = Offset(cx, baseBottom - gunH * 0.95f)
+                radius = gunW * 0.42f,
+                center = Offset(cx, baseBottom - gunH * 0.94f)
             )
             drawCircle(
                 color = Color.White,
-                radius = gunW * 0.22f,
-                center = Offset(cx, baseBottom - gunH * 0.95f)
+                radius = gunW * 0.20f,
+                center = Offset(cx, baseBottom - gunH * 0.94f)
             )
         }
+
+        val gloveColor = Color(0xFF6D4C41)
 
         when (engine.currentWeapon) {
             WeaponType.FIST -> {
@@ -758,16 +770,21 @@ object DoomRenderer {
                 val punchOffset = if (engine.weaponFlashTimer > 0f) -gunH * 0.35f else 0f
                 drawRoundRect(
                     color = fistCol,
-                    topLeft = Offset(cx - gunW * 0.35f, baseBottom - gunH * 0.65f + punchOffset),
-                    size = Size(gunW * 0.7f, gunH * 0.65f),
+                    topLeft = Offset(cx - gunW * 0.32f, baseBottom - gunH * 0.65f + punchOffset),
+                    size = Size(gunW * 0.64f, gunH * 0.65f),
                     cornerRadius = CornerRadius(14f, 14f)
+                )
+                drawRect(
+                    color = gloveColor,
+                    topLeft = Offset(cx - gunW * 0.34f, baseBottom - gunH * 0.42f + punchOffset),
+                    size = Size(gunW * 0.68f, gunH * 0.22f)
                 )
             }
             WeaponType.CHAINSAW -> {
                 drawRoundRect(
-                    color = Color(0xFF78909C),
-                    topLeft = Offset(cx - gunW * 0.18f, baseBottom - gunH * 0.92f),
-                    size = Size(gunW * 0.36f, gunH * 0.60f),
+                    color = Color(0xFF90A4AE),
+                    topLeft = Offset(cx - gunW * 0.16f, baseBottom - gunH * 0.94f),
+                    size = Size(gunW * 0.32f, gunH * 0.62f),
                     cornerRadius = CornerRadius(6f, 6f)
                 )
                 drawRoundRect(
@@ -786,30 +803,35 @@ object DoomRenderer {
                 )
                 drawCircle(
                     color = Color(0xFF00E676),
-                    radius = gunW * 0.25f,
+                    radius = gunW * 0.24f,
                     center = Offset(cx, baseBottom - gunH * 0.55f)
                 )
             }
             else -> {
-                // Barrel
                 val barrelCol = when (engine.currentWeapon) {
                     WeaponType.SHOTGUN -> Color(0xFF37474F)
                     WeaponType.CHAINGUN -> Color(0xFF607D8B)
                     WeaponType.ROCKET_LAUNCHER -> Color(0xFF4E342E)
-                    WeaponType.PLASMA_RIFLE -> Color(0xFF455A64)
+                    WeaponType.PLASMA_RIFLE -> Color(0xFF37474F)
                     else -> Color(0xFF546E7A)
                 }
                 drawRoundRect(
                     color = barrelCol,
-                    topLeft = Offset(cx - gunW * 0.24f, baseBottom - gunH * 0.90f),
-                    size = Size(gunW * 0.48f, gunH * 0.90f),
+                    topLeft = Offset(cx - gunW * 0.22f, baseBottom - gunH * 0.90f),
+                    size = Size(gunW * 0.44f, gunH * 0.90f),
                     cornerRadius = CornerRadius(8f, 8f)
                 )
-                // Center highlight ridge
                 drawRect(
-                    color = Color(0xFF90A4AE),
-                    topLeft = Offset(cx - gunW * 0.06f, baseBottom - gunH * 0.88f),
-                    size = Size(gunW * 0.12f, gunH * 0.55f)
+                    color = Color(0xFFB0BEC5),
+                    topLeft = Offset(cx - gunW * 0.05f, baseBottom - gunH * 0.88f),
+                    size = Size(gunW * 0.10f, gunH * 0.55f)
+                )
+                // Brown marine glove at bottom of gun
+                drawRoundRect(
+                    color = gloveColor,
+                    topLeft = Offset(cx - gunW * 0.28f, baseBottom - gunH * 0.26f),
+                    size = Size(gunW * 0.56f, gunH * 0.26f),
+                    cornerRadius = CornerRadius(8f, 8f)
                 )
             }
         }
@@ -818,9 +840,9 @@ object DoomRenderer {
     fun DrawScope.renderAutomap(engine: DoomEngine) {
         val w = size.width
         val h = size.height
-        drawRect(color = Color(0xE6080A0C), topLeft = Offset.Zero, size = Size(w, h))
+        drawRect(color = Color(0xEB080A0C), topLeft = Offset.Zero, size = Size(w, h))
 
-        val mapDim = minOf(w, h) * 0.88f
+        val mapDim = minOf(w, h) * 0.90f
         val cell = mapDim / engine.gridSize.toFloat()
         val startX = (w - mapDim) * 0.5f
         val startY = (h - mapDim) * 0.5f
@@ -837,8 +859,9 @@ object DoomRenderer {
                     7 -> Color(0xFF2979FF)
                     8 -> Color(0xFFFFD600)
                     9 -> Color(0xFFFF1744)
-                    10, 14 -> Color(0xFFE040FB) // Secrets highlighted in purple!
-                    11, 12 -> Color(0xFF00E676) // Exits highlighted in green!
+                    10 -> if (engine.isSecretCellRevealedOnMap(x, y)) Color(0xFFE040FB) else Color(0xFFD32F2F)
+                    14 -> if (engine.isSecretCellRevealedOnMap(x, y)) Color(0xFFAA00FF) else Color(0xFF1A2026)
+                    11, 12 -> Color(0xFF00E676)
                     13 -> Color(0xFF1B5E20)
                     15 -> Color(0xFFFF6D00)
                     else -> Color(0xFF1A2026)
@@ -846,12 +869,11 @@ object DoomRenderer {
                 drawRect(
                     color = col,
                     topLeft = Offset(startX + x * cell, startY + y * cell),
-                    size = Size(cell - 1f, cell - 1f)
+                    size = Size((cell - 1f).coerceAtLeast(1f), (cell - 1f).coerceAtLeast(1f))
                 )
             }
         }
 
-        // Draw monsters & items if IDDT cheat is active
         if (engine.fullMapCheat) {
             for (m in engine.monsters) {
                 if (m.state != MonsterState.DEAD) {
@@ -864,7 +886,6 @@ object DoomRenderer {
             }
         }
 
-        // Player arrow
         val px = startX + engine.playerX * cell
         val py = startY + engine.playerY * cell
         val dirX = cos(engine.playerAngle)
@@ -884,19 +905,17 @@ object DoomRenderer {
         drawRect(color = Color(0xFF22252A), topLeft = Offset.Zero, size = Size(w, h))
 
         val skinColor = if (engine.playerHealth <= 0) Color(0xFF8D6E63) else Color(0xFFE0AC8B)
-        // Hair
         drawRoundRect(
             color = Color(0xFF5D4037),
             topLeft = Offset(w * 0.18f, h * 0.08f),
             size = Size(w * 0.64f, h * 0.25f),
-            cornerRadius = CornerRadius(6f, 6f)
+            cornerRadius = CornerRadius(5f, 5f)
         )
-        // Face oval
         drawRoundRect(
             color = skinColor,
             topLeft = Offset(w * 0.20f, h * 0.20f),
             size = Size(w * 0.60f, h * 0.68f),
-            cornerRadius = CornerRadius(8f, 8f)
+            cornerRadius = CornerRadius(6f, 6f)
         )
 
         val isGod = engine.godModeCheat || engine.invulnerableTimer > 0f
@@ -907,11 +926,9 @@ object DoomRenderer {
             else -> Color(0xFF1A237E)
         }
 
-        // Eyes
         drawCircle(eyeColor, radius = w * 0.07f, center = Offset(w * 0.36f + eyeOffset, h * 0.44f))
         drawCircle(eyeColor, radius = w * 0.07f, center = Offset(w * 0.64f + eyeOffset, h * 0.44f))
 
-        // Blood smudges based on missing health
         if (engine.playerHealth < 75 && !isGod) {
             drawCircle(Color(0xFFC62828), radius = w * 0.06f, center = Offset(w * 0.50f, h * 0.58f))
         }
@@ -920,14 +937,13 @@ object DoomRenderer {
             drawCircle(Color(0xFFB71C1C), radius = w * 0.08f, center = Offset(w * 0.68f, h * 0.64f))
         }
 
-        // Mouth expression
         val mouthColor = if (engine.faceGrinTimer > 0f) Color.White else Color(0xFF4E342E)
         val mouthH = if (engine.facePainTimer > 0f) h * 0.16f else h * 0.08f
         drawRoundRect(
             color = mouthColor,
             topLeft = Offset(w * 0.34f, h * 0.68f),
             size = Size(w * 0.32f, mouthH),
-            cornerRadius = CornerRadius(4f, 4f)
+            cornerRadius = CornerRadius(3f, 3f)
         )
 
         drawRect(
