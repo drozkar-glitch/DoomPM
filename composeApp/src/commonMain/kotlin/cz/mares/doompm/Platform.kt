@@ -1,5 +1,6 @@
 package cz.mares.doompm
 
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
@@ -29,6 +30,7 @@ enum class DoomSoundEffect {
 }
 
 expect object PlatformServices {
+    fun pixelsToImageBitmap(pixels: IntArray, width: Int, height: Int): ImageBitmap
     fun playWavBytes(wavData: ByteArray)
     fun triggerHaptic(heavy: Boolean = false)
     fun saveString(key: String, value: String)
@@ -85,7 +87,6 @@ object DoomAudioManager {
         for (i in 0 until numSamples) {
             val t = i.toDouble() / sampleRate
             val env = exp(-t * 14.0)
-            // Distorted saw/square overdriven power chord (root + fifth)
             val s1 = if (sin(2.0 * PI * freqHz * t) >= 0.0) 0.6 else -0.6
             val s2 = sin(2.0 * PI * (freqHz * 1.5) * t) * 0.4
             val raw = (s1 + s2) * env * 0.24
@@ -140,7 +141,6 @@ object DoomAudioManager {
                         val boom = sin(2.0 * PI * (115.0 - 65.0 * progress) * t) * 0.75 + noise * 0.85
                         boom * env * 0.75
                     } else if (t > 0.28 && t < 0.35) {
-                        // Iconic pump-action chk-chk
                         noise * 0.45 * exp(-(t - 0.28) * 35.0)
                     } else if (t >= 0.35) {
                         noise * 0.50 * exp(-(t - 0.35) * 35.0)
@@ -204,7 +204,6 @@ object DoomAudioManager {
                     sin(2.0 * PI * freq * t) * (1.0 - progress) * 0.45
                 }
                 DoomSoundEffect.WEAPON_PICKUP -> {
-                    // Shotgun cocking metal sound
                     val sub = if (t < 0.14) t else (t - 0.16).coerceAtLeast(0.0)
                     noise * exp(-sub * 26.0) * 0.6
                 }
@@ -267,13 +266,13 @@ object DoomAudioManager {
         writeIntLE(4, totalSize - 8)
         writeAscii(8, "WAVE")
         writeAscii(12, "fmt ")
-        writeIntLE(16, 16) // PCM chunk size
-        writeShortLE(20, 1) // AudioFormat = 1 (PCM)
-        writeShortLE(22, 1) // Mono
+        writeIntLE(16, 16)
+        writeShortLE(20, 1)
+        writeShortLE(22, 1)
         writeIntLE(24, sampleRate)
-        writeIntLE(28, sampleRate * 2) // ByteRate
-        writeShortLE(32, 2) // BlockAlign
-        writeShortLE(34, 16) // BitsPerSample
+        writeIntLE(28, sampleRate * 2)
+        writeShortLE(32, 2)
+        writeShortLE(34, 16)
         writeAscii(36, "data")
         writeIntLE(40, dataSize)
 

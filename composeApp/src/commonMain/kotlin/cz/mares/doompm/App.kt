@@ -71,7 +71,6 @@ fun App() {
         var showAutomap by remember { mutableStateOf(false) }
         var showCheatDialog by remember { mutableStateOf(false) }
 
-        // Independent multi-touch states so forward + strafe + fire work simultaneously
         var holdFwd by remember { mutableStateOf(false) }
         var holdBack by remember { mutableStateOf(false) }
         var holdStrafeL by remember { mutableStateOf(false) }
@@ -95,7 +94,6 @@ fun App() {
             isFiringHeld = false
         }
 
-        // 60 FPS Game Loop
         LaunchedEffect(currentScreen) {
             var lastNanos = 0L
             while (currentScreen == AppScreen.PLAYING) {
@@ -263,7 +261,7 @@ private fun MainMenuScreen(
             fontWeight = FontWeight.ExtraBold
         )
         Text(
-            text = "Knee-Deep in the Dead (3D / 2.5D Edition)",
+            text = "Knee-Deep in the Dead (VGA 3D Pixel Edition)",
             color = Color(0xFFFFCC00),
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold
@@ -466,34 +464,36 @@ private fun GamePlayScreen(
     val tick = frameTick
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 1. Compact Fixed-Height Top Tactical Bar (never stretches vertically!)
+        // 1. Clean Non-Clipping Top Tactical Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(44.dp)
                 .background(Color(0xFF16191E))
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 6.dp),
+                    .padding(end = 4.dp),
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = "${engine.currentMapDef.code} • Skóre: ${engine.totalScore}",
+                    text = "${engine.currentMapDef.code} • Skóre: ${engine.totalScore} • ${FirebaseLeaderboard.formatTimeMmSs(engine.levelTimeSec.toInt())}",
                     color = Color(0xFFFFD600),
                     fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
+                    lineHeight = 13.sp,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "Zabití ${engine.killsCount}/${engine.totalMonsters} • Skrýše ${engine.secretsCount}/${engine.totalSecrets} • ${FirebaseLeaderboard.formatTimeMmSs(engine.levelTimeSec.toInt())}",
+                    text = "Zabití ${engine.killsCount}/${engine.totalMonsters} • Skrýše ${engine.secretsCount}/${engine.totalSecrets} • Věci ${engine.itemsCount}/${engine.totalItems}",
                     color = Color(0xFFB0BEC5),
                     fontSize = 10.sp,
+                    lineHeight = 12.sp,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
@@ -510,7 +510,7 @@ private fun GamePlayScreen(
                     onClick = onToggleAutomap
                 )
                 TopCompactActionChip(
-                    label = "⌨️ Cheat",
+                    label = "⌨️ IDDQD",
                     bgColor = Color(0xFF6A1B9A),
                     onClick = onOpenCheats
                 )
@@ -522,7 +522,7 @@ private fun GamePlayScreen(
             }
         }
 
-        // 2. Large Main 3D / 2.5D Viewport
+        // 2. Main VGA 3D Pixel-Art Viewport
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -549,13 +549,12 @@ private fun GamePlayScreen(
                 }
             }
 
-            // Status Banner message at top of 3D view
             if (engine.statusMessageTimer > 0f && engine.statusMessage.isNotBlank()) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(horizontal = 10.dp, vertical = 6.dp)
-                        .background(Color(0xCC121417), RoundedCornerShape(6.dp))
+                        .background(Color(0xD8121417), RoundedCornerShape(6.dp))
                         .border(1.dp, Color(0xFFFFAB00), RoundedCornerShape(6.dp))
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
@@ -571,13 +570,12 @@ private fun GamePlayScreen(
                 }
             }
 
-            // Death Overlay
             if (engine.isPlayerDead) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .padding(16.dp)
-                        .background(Color(0xE6280606), RoundedCornerShape(12.dp))
+                        .background(Color(0xEB280606), RoundedCornerShape(12.dp))
                         .border(2.dp, Color(0xFFFF1744), RoundedCornerShape(12.dp))
                         .padding(18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -599,10 +597,10 @@ private fun GamePlayScreen(
             }
         }
 
-        // 3. Classic DOOM Grey Stone Status Bar (Single-line compact layout)
+        // 3. Classic DOOM Stone Status Bar (Tall enough so labels never clip!)
         ClassicDoomStatusBar(engine = engine, frameTick = tick)
 
-        // 4. Proportional Responsive Touch Controls Bar (Never clips or overflows!)
+        // 4. Proportional Multi-Touch Controls Bar
         TouchControlsBar(
             onHoldFwd = onHoldFwd,
             onHoldBack = onHoldBack,
@@ -626,15 +624,16 @@ private fun TopCompactActionChip(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .height(30.dp)
-            .background(bgColor, RoundedCornerShape(6.dp))
+            .height(28.dp)
+            .background(bgColor, RoundedCornerShape(5.dp))
             .clickable { onClick() }
-            .padding(horizontal = 7.dp)
+            .padding(horizontal = 5.dp)
     ) {
         Text(
             text = label,
             color = Color.White,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
+            lineHeight = 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false
@@ -650,14 +649,14 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF33373D))
+            .background(Color(0xFF363A40))
             .border(1.dp, Color(0xFF546E7A))
             .padding(horizontal = 5.dp, vertical = 4.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(42.dp),
+                .height(48.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -674,9 +673,15 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                 modifier = Modifier.weight(1.08f)
             )
 
-            Canvas(modifier = Modifier.size(42.dp)) {
-                if (frameTick >= 0) {
-                    renderDoomguyFace(engine)
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(1.dp, Color(0xFF607D8B), RoundedCornerShape(3.dp))
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    if (frameTick >= 0) {
+                        renderDoomguyFace(engine)
+                    }
                 }
             }
 
@@ -687,7 +692,6 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                 modifier = Modifier.weight(1.08f)
             )
 
-            // Keys Box
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
@@ -701,11 +705,12 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                     text = "KLÍČE",
                     color = Color(0xFFB0BEC5),
                     fontSize = 8.sp,
+                    lineHeight = 10.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     softWrap = false
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     KeyCard.entries.forEach { k ->
                         val has = engine.keys.contains(k)
@@ -724,7 +729,6 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
 
         Spacer(modifier = Modifier.height(3.dp))
 
-        // Single-line Weapon Slots 1..7 Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -767,6 +771,7 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                         text = label,
                         color = if (owned) Color.White else Color(0xFF546E7A),
                         fontSize = 9.sp,
+                        lineHeight = 11.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -790,12 +795,13 @@ private fun StatusBox(
         modifier = modifier
             .fillMaxHeight()
             .background(Color(0xFF1E2227), RoundedCornerShape(4.dp))
-            .padding(horizontal = 4.dp, vertical = 2.dp)
+            .padding(horizontal = 3.dp, vertical = 2.dp)
     ) {
         Text(
             text = value,
             color = valueColor,
             fontSize = 14.sp,
+            lineHeight = 15.sp,
             fontWeight = FontWeight.ExtraBold,
             maxLines = 1,
             softWrap = false
@@ -804,6 +810,7 @@ private fun StatusBox(
             text = label,
             color = Color(0xFFB0BEC5),
             fontSize = 8.sp,
+            lineHeight = 10.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false
@@ -831,7 +838,6 @@ private fun TouchControlsBar(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left 3x2 Proportional Movement & Turn Pad (84dp total height)
         Column(
             modifier = Modifier.weight(1.22f),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -884,7 +890,6 @@ private fun TouchControlsBar(
             }
         }
 
-        // Right Proportional Combat & Action Cluster (exact same 84dp height!)
         Column(
             modifier = Modifier.weight(0.95f),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -906,6 +911,7 @@ private fun TouchControlsBar(
                         text = "🖐️ DVEŘE",
                         color = Color.White,
                         fontSize = 11.sp,
+                        lineHeight = 12.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -924,6 +930,7 @@ private fun TouchControlsBar(
                         text = "🔄 ZBRAŇ",
                         color = Color.White,
                         fontSize = 11.sp,
+                        lineHeight = 12.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -975,6 +982,7 @@ private fun HoldControlButton(
             text = label,
             color = Color.White,
             fontSize = fontSizeSp.sp,
+            lineHeight = (fontSizeSp + 2).sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
             maxLines = 1,
@@ -1433,8 +1441,8 @@ private fun GuideAndSecretsScreen(onBack: () -> Unit) {
 
         val sections = listOf(
             "Ovládání a boj" to "Levým křížem chodíš a děláš úkroky (strafe), tažením prstu po 3D obrazovce se plynule rozhlížíš. Tlačítkem DVEŘE (nebo dvojitým ťuknutím na 3D obrazovku) otevíráš dveře, přepínáš spínače EXIT a odhaluješ tajné posuvné stěny.",
-            "Jak najít tajné skrýše (Secrets)" to "V každé z 9 map jsou tajné posuvné zdi (označené jemným svislým švem na technické stěně) a skryté sektory. Postav se ke stěně a stiskni DVEŘE. Po otevření uslyšíš signál a započítá se ti celé nalezené tajemství!",
-            "Tajný východ do E1M9 (Military Base)" to "V mapě E1M3 (Toxin Refinery) jsou dva východy: klasický červeno-zelený spínač vede do E1M4, zatímco tajný fialovo-zlatý spínač vpravo nahoře za tajnou stěnou tě přenese do bonusové mapy E1M9!",
+            "Jak najít tajné skrýše (Secrets)" to "V každé z 9 map jsou tajné posuvné zdi (označené jemnou prasklinou a svislou spárou uprostřed panelu) a skryté sektory. Postav se ke stěně a stiskni DVEŘE. Po otevření uslyšíš signál a započítá se ti nalezené tajemství!",
+            "Tajný východ do E1M9 (Military Base)" to "V mapě E1M3 (Toxin Refinery) jsou dva východy: klasický červeno-zelený spínač EXIT vede do E1M4, zatímco tajný fialovo-zlatý spínač EXIT vpravo nahoře za tajnou stěnou tě přenese do bonusové mapy E1M9!",
             "Monster Infighting & Sudy" to "Pokud výstřel jednoho monstra zasáhne jiný druh démona, pustí se do boje mezi sebou. Výbušné sudy s radioaktivním slizem po rozstřelení způsobí řetězovou tlakovou vlnu.",
             "Klasické cheaty z klávesnice" to "IDDQD (Nesmrtelnost), IDKFA (Všechny zbraně, 200 % zbroj a klíče), IDFA (Zbraně a munice bez klíčů), IDSPISPOPD (Procházení zdmi), IDDT (Odhalení celé automapy a skrýší), IDCLEV11 až IDCLEV19 (Okamžitý skok do mapy)."
         )

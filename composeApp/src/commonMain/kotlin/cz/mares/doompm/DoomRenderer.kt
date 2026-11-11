@@ -1,67 +1,233 @@
 package cz.mares.doompm
 
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 object DoomRenderer {
-    private const val NUM_RAYS = 160
-    private val zBuffer = FloatArray(NUM_RAYS)
+    private const val FB_W = 280
+    private const val FB_H = 260
+    private val frameBuffer = IntArray(FB_W * FB_H)
+    private val zBuffer = FloatArray(FB_W)
+
+    // Classic Doom Spectre fuzz vertical offset table
+    private val fuzzOffsets = intArrayOf(
+        1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1,
+        1, -1, -1, -1, -1, 1, -1, -1, 1, 1, 1, 1, -1, 1, -1, 1
+    )
+    private var fuzzPos = 0
+
+    private class SpriteEntry(
+        val x: Float,
+        val y: Float,
+        val distSq: Float,
+        val kind: Int, // 1 = Monster, 2 = Item, 3 = Projectile
+        val monster: MonsterEntity? = null,
+        val item: MapItemEntity? = null,
+        val projectile: ProjectileEntity? = null
+    )
 
     fun DrawScope.render3DView(engine: DoomEngine) {
-        val w = size.width
-        val h = size.height
-        if (w <= 1f || h <= 1f) return
+        val dstW = size.width.toInt()
+        val dstH = size.height.toInt()
+        if (dstW <= 2 || dstH <= 2) return
 
-        val halfH = h * 0.5f
-        val mapDef = engine.currentMapDef
-        val isInvuln = engine.invulnerableTimer > 0f
+        DoomTextures.ensureInitialized()
 
-        // 1. Sky / Ceiling and Shaded Floor
-        if (isInvuln) {
-            drawRect(color = Color(0xFFDCDCDC), topLeft = Offset.Zero, size = Size(w, halfH))
-            drawRect(color = Color(0xFF9E9E9E), topLeft = Offset(0f, halfH), size = Size(w, halfH))
-        } else {
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(mapDef.skyColorTop), Color(mapDef.skyColorBottom), Color(0xFF14171C)),
-                    startY = 0f,
-                    endY = halfH
-                ),
-                topLeft = Offset.Zero,
-                size = Size(w, halfH)
-            )
-            drawRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF101215), Color(mapDef.floorColor)),
-                    startY = halfH,
-                    endY = h
-                ),
-                topLeft = Offset(0f, halfH),
-                size = Size(w, halfH)
-            )
-        }
-
+        val aspect = (size.width / size.height).coerceIn(0.62f, 1.55f)
         val dirX = cos(engine.playerAngle)
         val dirY = sin(engine.playerAngle)
-        val planeScale = 0.66f
+        val planeScale = 0.68f * aspect
         val planeX = -dirY * planeScale
         val planeY = dirX * planeScale
 
-        val colWidth = w / NUM_RAYS.toFloat()
+        val halfH = FB_H / 2
+        val projH = (FB_H.toFloat() / aspect.coerceAtMost(1.1f))
+        val isInvuln = engine.invulnerableTimer > 0f
+        val animFrame = (engine.levelTimeSec * 3.5f).toInt()
 
-        // 2. DDA Raycasting
-        for (col in 0 until NUM_RAYS) {
-            val cameraX = 2f * col.toFloat() / NUM_RAYS.toFloat() - 1f
+        // 1. Perspective-Correct Textured Floor, Ceiling & Phobos Mountain Sky
+        renderFloorsAndCeilings(
+            engine = engine,
+            dirX = dirX,
+            dirY = dirY,
+            planeX = planeX,
+            planeY = planeY,
+            halfH = halfH,
+            projH = projH,
+            animFrame = animFrame,
+            isInvuln = isInvuln
+        )
+
+        // 2. Per-Column Textured Wall & Sliding Door Raycasting
+        renderWalls(
+            engine = engine,
+            dirX = dirX,
+            dirY = dirY,
+            planeX = planeX,
+            planeY = planeY,
+            halfH = halfH,
+            projH = projH,
+            animFrame = animFrame,
+            isInvuln = isInvuln
+        )
+
+        // 3. Z-Buffered Pixel-Art Sprites (Monsters, Spectre Fuzz, Items, Barrels, Projectiles)
+        renderSpritesToBuffer(
+            engine = engine,
+            dirX = dirX,
+            dirY = dirY,
+            planeX = planeX,
+            planeY = planeY,
+            halfH = halfH,
+            projH = projH,
+            aspect = aspect,
+            animFrame = animFrame,
+            isInvuln = isInvuln
+        )
+
+        // 4. Pixel-Art First-Person Weapon with Walk Bobbing & Muzzle Light
+        if (!engine.isPlayerDead) {
+            renderWeaponToBuffer(engine, isInvuln)
+        }
+
+        // 5. Screen Tints (Damage Red, Pickup Gold, Teleport Green, RadSuit Visor) & Crosshair
+        applyScreenPostEffects(engine, halfH)
+
+        // Blit crisp pixel-art VGA framebuffer to screen
+        val bmp = PlatformServices.pixelsToImageBitmap(frameBuffer, FB_W, FB_H)
+        drawImage(
+            image = bmp,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(FB_W, FB_H),
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(dstW, dstH),
+            filterQuality = FilterQuality.None
+        )
+    }
+
+    private fun renderFloorsAndCeilings(
+        engine: DoomEngine,
+        dirX: Float,
+        dirY: Float,
+        planeX: Float,
+        planeY: Float,
+        halfH: Int,
+        projH: Float,
+        animFrame: Int,
+        isInvuln: Boolean
+    ) {
+        val rayDirX0 = dirX - planeX
+        val rayDirY0 = dirY - planeY
+        val rayDirX1 = dirX + planeX
+        val rayDirY1 = dirY + planeY
+        val posZ = 0.5f * projH
+
+        val floorTex = DoomTextures.floorTex
+        val ceilTex = DoomTextures.ceilingTex
+        val acidTex = DoomTextures.getAcidTexture(animFrame)
+        val teleTex = DoomTextures.teleporterTex
+        val gs = engine.gridSize
+        val grid = engine.grid
+
+        val skyTopR = ((engine.currentMapDef.skyColorTop ushr 16) and 0xFF).toInt()
+        val skyTopG = ((engine.currentMapDef.skyColorTop ushr 8) and 0xFF).toInt()
+        val skyTopB = (engine.currentMapDef.skyColorTop and 0xFF).toInt()
+        val skyBotR = ((engine.currentMapDef.skyColorBottom ushr 16) and 0xFF).toInt()
+        val skyBotG = ((engine.currentMapDef.skyColorBottom ushr 8) and 0xFF).toInt()
+        val skyBotB = (engine.currentMapDef.skyColorBottom and 0xFF).toInt()
+
+        for (y in halfH until FB_H) {
+            val p = (y - halfH).coerceAtLeast(1)
+            val rowDistance = posZ / p.toFloat()
+            val shade = (1.0f / (1.0f + rowDistance * 0.14f)).coerceIn(0.14f, 1.0f)
+
+            val stepX = rowDistance * (rayDirX1 - rayDirX0) / FB_W.toFloat()
+            val stepY = rowDistance * (rayDirY1 - rayDirY0) / FB_W.toFloat()
+            var floorX = engine.playerX + rowDistance * rayDirX0
+            var floorY = engine.playerY + rowDistance * rayDirY0
+
+            val floorRowOffset = y * FB_W
+            val ceilY = (FB_H - 1 - y)
+            val ceilRowOffset = ceilY * FB_W
+            val skyGrad = (ceilY.toFloat() / halfH.toFloat()).coerceIn(0f, 1f)
+
+            for (x in 0 until FB_W) {
+                val cellX = floor(floorX).toInt()
+                val cellY = floor(floorY).toInt()
+                val tx = ((floorX * 64f).toInt()) and 63
+                val ty = ((floorY * 64f).toInt()) and 63
+                val texIdx = (ty shl 6) + tx
+
+                val tile = if (cellX in 0 until gs && cellY in 0 until gs) grid[cellY][cellX] else 0
+
+                // Floor pixel
+                val rawFloor = when (tile) {
+                    13 -> acidTex[texIdx]
+                    15 -> teleTex[texIdx]
+                    else -> floorTex[texIdx]
+                }
+                val floorShade = if (tile == 13 || tile == 15) (shade * 1.35f).coerceAtMost(1.0f) else shade
+                frameBuffer[floorRowOffset + x] = DoomTextures.shadeColor(rawFloor, floorShade, isInvuln)
+
+                // Symmetrical Ceiling pixel (Outdoor mountain sky above acid pools, industrial lights indoors)
+                if (ceilY >= 0) {
+                    if (tile == 13) {
+                        val skyAng = engine.playerAngle + (x.toFloat() / FB_W.toFloat() - 0.5f) * 1.1f
+                        val mtnHeight = 0.68f + sin(skyAng * 5f) * 0.12f + cos(skyAng * 13f) * 0.06f
+                        val skyCol = if (skyGrad > mtnHeight) {
+                            DoomTextures.rgb(58, 52, 48)
+                        } else {
+                            val r = (skyTopR + (skyBotR - skyTopR) * skyGrad).toInt()
+                            val g = (skyTopG + (skyBotG - skyTopG) * skyGrad).toInt()
+                            val b = (skyTopB + (skyBotB - skyTopB) * skyGrad).toInt()
+                            DoomTextures.rgb(r, g, b)
+                        }
+                        frameBuffer[ceilRowOffset + x] = if (isInvuln) {
+                            DoomTextures.shadeColor(skyCol, 0.9f, true)
+                        } else {
+                            skyCol
+                        }
+                    } else {
+                        val rawCeil = ceilTex[texIdx]
+                        // Keep ceiling light panels bright even at medium distance
+                        val isLightPixel = ((rawCeil and 0xFF) > 175)
+                        val cShade = if (isLightPixel) (shade * 1.45f).coerceAtMost(1.0f) else shade * 0.88f
+                        frameBuffer[ceilRowOffset + x] = DoomTextures.shadeColor(rawCeil, cShade, isInvuln)
+                    }
+                }
+
+                floorX += stepX
+                floorY += stepY
+            }
+        }
+    }
+
+    private fun renderWalls(
+        engine: DoomEngine,
+        dirX: Float,
+        dirY: Float,
+        planeX: Float,
+        planeY: Float,
+        halfH: Int,
+        projH: Float,
+        animFrame: Int,
+        isInvuln: Boolean
+    ) {
+        val gs = engine.gridSize
+        val muzzleLightBoost = if (engine.weaponFlashTimer > 0f) 0.22f else 0f
+
+        for (x in 0 until FB_W) {
+            val cameraX = 2f * x.toFloat() / FB_W.toFloat() - 1f
             val rayDirX = dirX + planeX * cameraX
             val rayDirY = dirY + planeY * cameraX
 
@@ -91,15 +257,12 @@ object DoomRenderer {
                 sideDistY = (mapY + 1f - engine.playerY) * deltaDistY
             }
 
-            var hitTile = 0
+            var hitTile = 1
             var side = 0
-            var sawAcidFloor = false
-            var acidDist = 0f
-            var sawTeleporter = false
-            var teleDist = 0f
+            var doorSlideOffset = 0f
 
             var steps = 0
-            while (steps < 42) {
+            while (steps < 44) {
                 steps++
                 if (sideDistX < sideDistY) {
                     sideDistX += deltaDistX
@@ -111,27 +274,19 @@ object DoomRenderer {
                     side = 1
                 }
 
-                if (mapX !in 0 until engine.gridSize || mapY !in 0 until engine.gridSize) {
+                if (mapX !in 0 until gs || mapY !in 0 until gs) {
                     hitTile = 1
                     break
                 }
 
                 val t = engine.grid[mapY][mapX]
-                if (t == 13 && !sawAcidFloor) {
-                    sawAcidFloor = true
-                    acidDist = if (side == 0) (sideDistX - deltaDistX) else (sideDistY - deltaDistY)
-                } else if (t == 15 && !sawTeleporter) {
-                    sawTeleporter = true
-                    teleDist = if (side == 0) (sideDistX - deltaDistX) else (sideDistY - deltaDistY)
-                }
-
                 if (t in 1..5 || t == 11 || t == 12) {
                     hitTile = t
                     break
                 } else if (t in 6..10) {
-                    val door = engine.doors[mapY * engine.gridSize + mapX]
+                    val door = engine.doors[mapY * gs + mapX]
                     val openAmt = door?.openAmount ?: 0f
-                    if (openAmt < 0.92f) {
+                    if (openAmt < 0.96f) {
                         val perpTmp = if (side == 0) (sideDistX - deltaDistX) else (sideDistY - deltaDistY)
                         val wxTmp = if (side == 0) {
                             engine.playerY + perpTmp * rayDirY
@@ -141,6 +296,7 @@ object DoomRenderer {
                         val fract = wxTmp - floor(wxTmp)
                         if (fract >= openAmt) {
                             hitTile = t
+                            doorSlideOffset = openAmt
                             break
                         }
                     }
@@ -148,691 +304,322 @@ object DoomRenderer {
             }
 
             val perpWallDist = (if (side == 0) (sideDistX - deltaDistX) else (sideDistY - deltaDistY))
-                .coerceAtLeast(0.12f)
-            zBuffer[col] = perpWallDist
+                .coerceAtLeast(0.10f)
+            zBuffer[x] = perpWallDist
 
-            val lineHeight = (h / perpWallDist)
-            val drawStart = (halfH - lineHeight * 0.5f).coerceAtLeast(0f)
-            val drawEnd = (halfH + lineHeight * 0.5f).coerceAtMost(h)
-            val xLeft = col * colWidth
-            val sliceW = colWidth + 1.2f
+            val lineHeight = (projH / perpWallDist).toInt().coerceAtLeast(1)
+            val rawStart = halfH - lineHeight / 2
+            val drawStart = rawStart.coerceAtLeast(0)
+            val drawEnd = (halfH + lineHeight / 2).coerceAtMost(FB_H - 1)
 
-            if (sawAcidFloor && acidDist > 0.35f && !isInvuln) {
-                val acidLineH = h / acidDist
-                val acidY = (halfH + acidLineH * 0.48f).coerceIn(drawEnd, h)
-                val pulse = (sin(engine.levelTimeSec * 4.5f + col * 0.2f) * 0.15f + 0.85f)
-                drawRect(
-                    color = Color(0f, (0.68f * pulse).coerceIn(0f, 1f), 0.18f, 0.82f),
-                    topLeft = Offset(xLeft, drawEnd),
-                    size = Size(sliceW, (acidY - drawEnd).coerceAtLeast(4f))
-                )
-            }
-            if (sawTeleporter && teleDist > 0.35f && !isInvuln) {
-                val teleLineH = h / teleDist
-                val teleY = (halfH + teleLineH * 0.48f).coerceIn(drawEnd, h)
-                drawRect(
-                    color = Color(0.95f, 0.15f, 0.2f, 0.85f),
-                    topLeft = Offset(xLeft, drawEnd),
-                    size = Size(sliceW, (teleY - drawEnd).coerceAtLeast(4f))
-                )
-            }
-
-            val rawWallX = if (side == 0) {
+            var wallX = if (side == 0) {
                 engine.playerY + perpWallDist * rayDirY
             } else {
                 engine.playerX + perpWallDist * rayDirX
             }
-            val wallU = rawWallX - floor(rawWallX)
+            wallX -= floor(wallX)
+            if (doorSlideOffset > 0f) {
+                wallX = (wallX - doorSlideOffset).coerceIn(0f, 0.999f)
+            }
 
-            val distShade = (1f / (1f + perpWallDist * 0.10f)).coerceIn(0.18f, 1f)
+            var texX = (wallX * 64f).toInt().coerceIn(0, 63)
+            if (doorSlideOffset == 0f) {
+                if (side == 0 && rayDirX > 0f) texX = 63 - texX
+                if (side == 1 && rayDirY < 0f) texX = 63 - texX
+            }
+
+            val wallTex = DoomTextures.getWallTexture(hitTile, animFrame)
+            val distShade = (1.0f / (1.0f + perpWallDist * 0.12f) + muzzleLightBoost).coerceIn(0.15f, 1.0f)
             val sideShade = if (side == 1) 0.76f else 1.0f
-            val totalShade = distShade * sideShade
+            val totalShade = (distShade * sideShade).coerceIn(0.14f, 1.0f)
 
-            drawWallColumn(
-                tile = hitTile,
-                xLeft = xLeft,
-                sliceW = sliceW,
-                drawStart = drawStart,
-                drawEnd = drawEnd,
-                wallU = wallU,
-                shade = totalShade,
-                isInvuln = isInvuln,
-                timeSec = engine.levelTimeSec
-            )
-        }
+            val texStep = 64.0f / lineHeight.toFloat()
+            var texPos = (drawStart - rawStart) * texStep
 
-        // 3. Render Sprites
-        renderSprites(
-            engine = engine,
-            w = w,
-            h = h,
-            halfH = halfH,
-            dirX = dirX,
-            dirY = dirY,
-            planeX = planeX,
-            planeY = planeY,
-            colWidth = colWidth,
-            isInvuln = isInvuln
-        )
-
-        // 4. First-Person Weapon with Marine Gloves
-        if (!engine.isPlayerDead) {
-            renderFirstPersonWeapon(engine, w, h)
+            for (y in drawStart..drawEnd) {
+                val texY = (texPos.toInt()) and 63
+                texPos += texStep
+                val rawCol = wallTex[(texY shl 6) + texX]
+                frameBuffer[y * FB_W + x] = DoomTextures.shadeColor(rawCol, totalShade, isInvuln)
+            }
         }
-
-        // 5. Screen Flash Effects
-        if (engine.damageFlashTimer > 0f) {
-            val alpha = (engine.damageFlashTimer * 0.85f).coerceIn(0f, 0.55f)
-            drawRect(color = Color(1f, 0.08f, 0.05f, alpha), topLeft = Offset.Zero, size = Size(w, h))
-        }
-        if (engine.pickupFlashTimer > 0f) {
-            val alpha = (engine.pickupFlashTimer * 0.9f).coerceIn(0f, 0.35f)
-            drawRect(color = Color(1f, 0.85f, 0.2f, alpha), topLeft = Offset.Zero, size = Size(w, h))
-        }
-        if (engine.teleportFlashTimer > 0f) {
-            val alpha = (engine.teleportFlashTimer * 0.95f).coerceIn(0f, 0.6f)
-            drawRect(color = Color(0.2f, 1f, 0.35f, alpha), topLeft = Offset.Zero, size = Size(w, h))
-        }
-        if (engine.radSuitTimer > 0f) {
-            drawRect(color = Color(0.1f, 0.85f, 0.2f, 0.14f), topLeft = Offset.Zero, size = Size(w, h))
-        }
-
-        // Crosshair
-        val cx = w * 0.5f
-        val cy = halfH
-        drawLine(Color(0xBB00FF66), Offset(cx - 8f, cy), Offset(cx + 8f, cy), strokeWidth = 2f)
-        drawLine(Color(0xBB00FF66), Offset(cx, cy - 8f), Offset(cx, cy + 8f), strokeWidth = 2f)
     }
 
-    private fun DrawScope.drawWallColumn(
-        tile: Int,
-        xLeft: Float,
-        sliceW: Float,
-        drawStart: Float,
-        drawEnd: Float,
-        wallU: Float,
-        shade: Float,
-        isInvuln: Boolean,
-        timeSec: Float
+    private fun renderSpritesToBuffer(
+        engine: DoomEngine,
+        dirX: Float,
+        dirY: Float,
+        planeX: Float,
+        planeY: Float,
+        halfH: Int,
+        projH: Float,
+        aspect: Float,
+        animFrame: Int,
+        isInvuln: Boolean
     ) {
-        val totalH = (drawEnd - drawStart).coerceAtLeast(1f)
-        val texX = (wallU * 16f).toInt().coerceIn(0, 15)
+        val entries = ArrayList<SpriteEntry>(engine.monsters.size + engine.items.size + engine.projectiles.size)
 
-        fun shadedColor(r: Int, g: Int, b: Int): Color {
-            if (isInvuln) {
-                val lum = ((r + g + b) / 3 * shade).toInt().coerceIn(30, 245)
-                return Color(lum, lum, lum)
-            }
-            return Color(
-                (r * shade).toInt().coerceIn(0, 255),
-                (g * shade).toInt().coerceIn(0, 255),
-                (b * shade).toInt().coerceIn(0, 255)
-            )
+        for (m in engine.monsters) {
+            val dx = m.x - engine.playerX
+            val dy = m.y - engine.playerY
+            entries.add(SpriteEntry(m.x, m.y, dx * dx + dy * dy, 1, monster = m))
+        }
+        for (it in engine.items) {
+            if (it.collected) continue
+            val dx = it.x - engine.playerX
+            val dy = it.y - engine.playerY
+            entries.add(SpriteEntry(it.x, it.y, dx * dx + dy * dy, 2, item = it))
+        }
+        for (p in engine.projectiles) {
+            val dx = p.x - engine.playerX
+            val dy = p.y - engine.playerY
+            entries.add(SpriteEntry(p.x, p.y, dx * dx + dy * dy, 3, projectile = p))
         }
 
-        val baseCol = when (tile) {
-            1 -> if (texX == 0 || texX == 8 || texX == 15) shadedColor(58, 68, 78) else shadedColor(118, 130, 142)
-            2 -> if ((texX % 4) == 0) shadedColor(76, 72, 65) else shadedColor(124, 116, 104)
-            3 -> if ((texX % 4) == 0) shadedColor(88, 24, 24) else shadedColor(164, 44, 38)
-            4 -> shadedColor(78, 104, 80)
-            5 -> shadedColor(62, 78, 98)
-            6 -> if (texX in 7..8) shadedColor(44, 48, 54) else shadedColor(142, 148, 156)
-            7 -> if (texX in 1..2 || texX in 13..14) shadedColor(35, 135, 255) else shadedColor(95, 115, 145)
-            8 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 215, 20) else shadedColor(135, 122, 92)
-            9 -> if (texX in 1..2 || texX in 13..14) shadedColor(255, 40, 50) else shadedColor(145, 85, 85)
-            10 -> if (texX == 7 || texX == 8) shadedColor(86, 98, 110) else shadedColor(116, 128, 140)
-            11 -> shadedColor(135, 52, 52)
-            12 -> shadedColor(120, 46, 155)
-            else -> shadedColor(100, 100, 100)
-        }
+        entries.sortByDescending { it.distSq }
+        val invDet = 1.0f / (planeX * dirY - dirX * planeY)
+        val widthAspect = (1.0f / aspect.coerceIn(0.65f, 1.35f))
 
-        drawRect(
-            color = baseCol,
-            topLeft = Offset(xLeft, drawStart),
-            size = Size(sliceW, totalH)
-        )
+        for (entry in entries) {
+            val relX = entry.x - engine.playerX
+            val relY = entry.y - engine.playerY
 
-        val trimH = (totalH * 0.11f).coerceAtLeast(2f)
-        drawRect(
-            color = shadedColor(42, 46, 52),
-            topLeft = Offset(xLeft, drawStart),
-            size = Size(sliceW, trimH)
-        )
-        drawRect(
-            color = shadedColor(36, 40, 46),
-            topLeft = Offset(xLeft, drawEnd - trimH),
-            size = Size(sliceW, trimH)
-        )
+            val transformX = invDet * (dirY * relX - dirX * relY)
+            val transformY = invDet * (-planeY * relX + planeX * relY)
+            if (transformY <= 0.16f) continue
 
-        when (tile) {
-            1 -> {
-                drawRect(
-                    color = shadedColor(48, 55, 64),
-                    topLeft = Offset(xLeft, drawStart + totalH * 0.48f),
-                    size = Size(sliceW, (totalH * 0.05f).coerceAtLeast(1.5f))
-                )
+            val screenX = ((FB_W * 0.5f) * (1f + transformX / transformY)).toInt()
+            val baseH = (projH / transformY).toInt().coerceAtLeast(2)
+
+            if (entry.kind == 3) {
+                val proj = entry.projectile ?: continue
+                drawProjectileToBuffer(proj, screenX, halfH, baseH, transformY)
+                continue
             }
-            3 -> {
-                drawRect(
-                    color = shadedColor(58, 16, 16),
-                    topLeft = Offset(xLeft, drawStart + totalH * 0.33f),
-                    size = Size(sliceW, (totalH * 0.04f).coerceAtLeast(1.5f))
-                )
-                drawRect(
-                    color = shadedColor(58, 16, 16),
-                    topLeft = Offset(xLeft, drawStart + totalH * 0.66f),
-                    size = Size(sliceW, (totalH * 0.04f).coerceAtLeast(1.5f))
-                )
+
+            val scale = if (entry.kind == 1) {
+                when (entry.monster?.type) {
+                    MonsterType.CYBERDEMON -> 1.16f
+                    MonsterType.BARON_OF_HELL -> 1.02f
+                    MonsterType.CACODEMON -> 0.92f
+                    MonsterType.LOST_SOUL -> 0.65f
+                    else -> 0.88f
+                }
+            } else {
+                0.78f
             }
-            4 -> {
-                if (texX in 4..11) {
-                    drawRect(
-                        color = shadedColor(42, 230, 80),
-                        topLeft = Offset(xLeft, drawStart + totalH * 0.42f),
-                        size = Size(sliceW, totalH * 0.16f)
-                    )
+
+            val spriteH = (baseH * scale).toInt().coerceAtLeast(2)
+            val spriteW = (spriteH * widthAspect * 0.92f).toInt().coerceAtLeast(2)
+
+            val floorScreenY = halfH + baseH / 2
+            val floatOffset = if (entry.kind == 1 &&
+                (entry.monster?.type == MonsterType.CACODEMON || entry.monster?.type == MonsterType.LOST_SOUL) &&
+                entry.monster.state != MonsterState.DEAD
+            ) {
+                (baseH * 0.16f).toInt()
+            } else 0
+
+            val rawStartY = floorScreenY - spriteH - floatOffset
+            val rawEndY = rawStartY + spriteH
+            val drawStartY = rawStartY.coerceAtLeast(0)
+            val drawEndY = (rawEndY - 1).coerceAtMost(FB_H - 1)
+
+            val rawStartX = screenX - spriteW / 2
+            val rawEndX = rawStartX + spriteW
+            val drawStartX = rawStartX.coerceAtLeast(0)
+            val drawEndX = (rawEndX - 1).coerceAtMost(FB_W - 1)
+
+            if (drawStartX > drawEndX || drawStartY > drawEndY) continue
+
+            val texPixels = if (entry.kind == 1) {
+                val m = entry.monster!!
+                DoomTextures.getMonsterSprite(m.type, m.state, (m.animPhase.toInt()) and 1)
+            } else {
+                val it = entry.item!!
+                DoomTextures.getItemSprite(it.type, it.type.isShootableBarrel && it.barrelHp <= 0, animFrame)
+            }
+
+            val isSpectreFuzz = (entry.kind == 1 && entry.monster?.type?.isPartialInvisible == true &&
+                entry.monster.state != MonsterState.DEAD)
+            val shade = if (entry.kind == 2 && !entry.item!!.type.isSolidObstacle) {
+                // Keep pickups slightly brighter so keys, medikits and weapons are clearly readable
+                (1.0f / (1.0f + transformY * 0.07f)).coerceIn(0.42f, 1.0f)
+            } else {
+                (1.0f / (1.0f + transformY * 0.11f)).coerceIn(0.20f, 1.0f)
+            }
+
+            var anyColumnVisible = false
+            for (stripe in drawStartX..drawEndX) {
+                if (transformY >= zBuffer[stripe]) continue
+                anyColumnVisible = true
+                val texX = (((stripe - rawStartX) * 64) / spriteW).coerceIn(0, 63)
+
+                for (y in drawStartY..drawEndY) {
+                    val texY = (((y - rawStartY) * 64) / spriteH).coerceIn(0, 63)
+                    val srcCol = texPixels[(texY shl 6) + texX]
+                    if ((srcCol ushr 24) != 0) {
+                        if (isSpectreFuzz) {
+                            // Classic 1993 DOOM Spectre Partial Invisibility refraction/fuzz!
+                            val fOff = fuzzOffsets[fuzzPos and 31]
+                            fuzzPos++
+                            val sampleY = (y + fOff).coerceIn(0, FB_H - 1)
+                            val bg = frameBuffer[sampleY * FB_W + stripe]
+                            frameBuffer[y * FB_W + stripe] = DoomTextures.shadeColor(bg, 0.58f, false)
+                        } else {
+                            frameBuffer[y * FB_W + stripe] = DoomTextures.shadeColor(srcCol, shade, isInvuln)
+                        }
+                    }
                 }
             }
-            5 -> {
-                if (texX in 3..12 && texX % 2 == 0) {
-                    val blink = ((timeSec * 4f + texX).toInt() % 2 == 0)
-                    val ledCol = if (blink) shadedColor(40, 245, 120) else shadedColor(255, 180, 30)
-                    drawRect(
-                        color = ledCol,
-                        topLeft = Offset(xLeft, drawStart + totalH * 0.32f),
-                        size = Size(sliceW, totalH * 0.28f)
-                    )
-                }
-            }
-            6, 7, 8, 9 -> {
-                val barCol = when (tile) {
-                    7 -> shadedColor(30, 135, 255)
-                    8 -> shadedColor(255, 215, 20)
-                    9 -> shadedColor(255, 45, 55)
-                    else -> shadedColor(205, 160, 45)
-                }
-                drawRect(
-                    color = barCol,
-                    topLeft = Offset(xLeft, drawStart + totalH * 0.44f),
-                    size = Size(sliceW, totalH * 0.12f)
-                )
-            }
-            11, 12 -> {
-                if (texX in 5..10) {
-                    val swCol = if (tile == 12) shadedColor(255, 215, 0) else shadedColor(50, 250, 90)
-                    drawRect(
-                        color = shadedColor(32, 32, 38),
-                        topLeft = Offset(xLeft, drawStart + totalH * 0.32f),
-                        size = Size(sliceW, totalH * 0.36f)
-                    )
-                    if (texX in 6..9) {
-                        drawRect(
-                            color = swCol,
-                            topLeft = Offset(xLeft, drawStart + totalH * 0.40f),
-                            size = Size(sliceW, totalH * 0.20f)
-                        )
+
+            // Crisp retro HP bar above damaged monsters
+            val m = entry.monster
+            if (anyColumnVisible && m != null && m.hp > 0 && m.hp < m.type.maxHp && rawStartY in 4 until FB_H) {
+                val barW = (spriteW * 0.72f).toInt().coerceIn(8, 48)
+                val bx0 = (screenX - barW / 2).coerceIn(0, FB_W - 1)
+                val bx1 = (screenX + barW / 2).coerceIn(0, FB_W - 1)
+                val by = (rawStartY - 3).coerceIn(1, FB_H - 3)
+                val fillEnd = bx0 + ((bx1 - bx0) * m.hp) / m.type.maxHp
+                for (bx in bx0..bx1) {
+                    if (transformY < zBuffer[bx]) {
+                        val c = if (bx <= fillEnd) DoomTextures.rgb(255, 35, 35) else DoomTextures.rgb(25, 25, 28)
+                        frameBuffer[by * FB_W + bx] = c
+                        frameBuffer[(by + 1) * FB_W + bx] = c
                     }
                 }
             }
         }
     }
 
-    private class SpriteRenderEntry(
-        val x: Float,
-        val y: Float,
-        val distSq: Float,
-        val kind: Int,
-        val monster: MonsterEntity? = null,
-        val item: MapItemEntity? = null,
-        val projectile: ProjectileEntity? = null
-    )
-
-    private fun DrawScope.renderSprites(
-        engine: DoomEngine,
-        w: Float,
-        h: Float,
-        halfH: Float,
-        dirX: Float,
-        dirY: Float,
-        planeX: Float,
-        planeY: Float,
-        colWidth: Float,
-        isInvuln: Boolean
+    private fun drawProjectileToBuffer(
+        proj: ProjectileEntity,
+        screenX: Int,
+        halfH: Int,
+        baseH: Int,
+        transformY: Float
     ) {
-        val entries = ArrayList<SpriteRenderEntry>(engine.monsters.size + engine.items.size + engine.projectiles.size)
+        val rad = when (proj.kind) {
+            ProjectileKind.BFG_ORB -> (baseH * 0.24f).toInt()
+            ProjectileKind.ROCKET -> (baseH * 0.15f).toInt()
+            else -> (baseH * 0.13f).toInt()
+        }.coerceIn(2, 42)
 
-        for (m in engine.monsters) {
-            val dx = m.x - engine.playerX
-            val dy = m.y - engine.playerY
-            entries.add(SpriteRenderEntry(m.x, m.y, dx * dx + dy * dy, 1, monster = m))
-        }
-        for (it in engine.items) {
-            if (it.collected) continue
-            val dx = it.x - engine.playerX
-            val dy = it.y - engine.playerY
-            entries.add(SpriteRenderEntry(it.x, it.y, dx * dx + dy * dy, 2, item = it))
-        }
-        for (p in engine.projectiles) {
-            val dx = p.x - engine.playerX
-            val dy = p.y - engine.playerY
-            entries.add(SpriteRenderEntry(p.x, p.y, dx * dx + dy * dy, 3, projectile = p))
+        val (outerR, outerG, outerB) = when (proj.kind) {
+            ProjectileKind.BFG_ORB, ProjectileKind.BARON_PLASMA -> Triple(35, 250, 95)
+            ProjectileKind.PLASMA -> Triple(45, 195, 255)
+            ProjectileKind.CACO_LIGHTNING -> Triple(255, 40, 75)
+            else -> Triple(255, 135, 20)
         }
 
-        entries.sortByDescending { it.distSq }
+        val x0 = (screenX - rad).coerceAtLeast(0)
+        val x1 = (screenX + rad).coerceAtMost(FB_W - 1)
+        val y0 = (halfH - rad).coerceAtLeast(0)
+        val y1 = (halfH + rad).coerceAtMost(FB_H - 1)
 
-        val invDet = 1.0f / (planeX * dirY - dirX * planeY)
-
-        for (entry in entries) {
-            val spriteX = entry.x - engine.playerX
-            val spriteY = entry.y - engine.playerY
-
-            val transformX = invDet * (dirY * spriteX - dirX * spriteY)
-            val transformY = invDet * (-planeY * spriteX + planeX * spriteY)
-
-            if (transformY <= 0.18f) continue
-
-            val spriteScreenX = (w * 0.5f) * (1f + transformX / transformY)
-            val baseSpriteH = abs(h / transformY)
-
-            val centerCol = (spriteScreenX / colWidth).toInt()
-            if (centerCol !in -25 until (NUM_RAYS + 25)) continue
-
-            val halfCols = ((baseSpriteH * 0.45f) / colWidth).toInt().coerceAtLeast(1)
-            val minCol = (centerCol - halfCols).coerceIn(0, NUM_RAYS - 1)
-            val maxCol = (centerCol + halfCols).coerceIn(0, NUM_RAYS - 1)
-            var visibleCols = 0
-            for (c in minCol..maxCol) {
-                if (transformY < zBuffer[c]) visibleCols++
-            }
-            if (visibleCols == 0) continue
-
-            val shade = (1f / (1f + transformY * 0.09f)).coerceIn(0.25f, 1f)
-
-            when (entry.kind) {
-                1 -> entry.monster?.let { m ->
-                    drawMonsterSprite(m, spriteScreenX, halfH, baseSpriteH, shade, isInvuln)
-                }
-                2 -> entry.item?.let { item ->
-                    drawItemSprite(item, spriteScreenX, halfH, baseSpriteH, shade)
-                }
-                3 -> entry.projectile?.let { proj ->
-                    drawProjectileSprite(proj, spriteScreenX, halfH, baseSpriteH)
+        for (px in x0..x1) {
+            if (transformY >= zBuffer[px]) continue
+            val nx = (px - screenX).toFloat() / rad.toFloat()
+            for (py in y0..y1) {
+                val ny = (py - halfH).toFloat() / rad.toFloat()
+                val d2 = nx * nx + ny * ny
+                if (d2 <= 1.0f) {
+                    val core = (1.0f - sqrt(d2)).coerceIn(0f, 1f)
+                    val r = (outerR + (255 - outerR) * core * 0.85f).toInt()
+                    val g = (outerG + (255 - outerG) * core * 0.85f).toInt()
+                    val b = (outerB + (255 - outerB) * core * 0.85f).toInt()
+                    frameBuffer[py * FB_W + px] = DoomTextures.rgb(r, g, b)
                 }
             }
         }
     }
 
-    private fun DrawScope.drawMonsterSprite(
-        m: MonsterEntity,
-        screenX: Float,
-        halfH: Float,
-        baseH: Float,
-        shade: Float,
-        isInvuln: Boolean
-    ) {
-        val scale = when (m.type) {
-            MonsterType.CYBERDEMON -> 1.18f
-            MonsterType.BARON_OF_HELL -> 1.00f
-            MonsterType.CACODEMON -> 0.86f
-            MonsterType.LOST_SOUL -> 0.56f
-            else -> 0.84f
-        }
-        val mh = baseH * scale
-        val mw = mh * 0.70f
-        val bottomY = halfH + baseH * 0.48f
-
-        if (m.state == MonsterState.DEAD) {
-            val corpseH = mh * 0.22f
-            drawRoundRect(
-                color = Color(0.58f * shade, 0.08f * shade, 0.08f * shade),
-                topLeft = Offset(screenX - mw * 0.52f, bottomY - corpseH),
-                size = Size(mw * 1.04f, corpseH),
-                cornerRadius = CornerRadius(corpseH * 0.4f, corpseH * 0.4f)
-            )
-            return
-        }
-
-        if (m.state == MonsterState.DYING) {
-            val collapse = (m.stateTimer / 0.55f).coerceIn(0.2f, 1f)
-            val curH = mh * collapse
-            drawRoundRect(
-                color = Color(0.88f, 0.2f, 0.1f, 0.92f),
-                topLeft = Offset(screenX - mw * 0.45f, bottomY - curH),
-                size = Size(mw * 0.9f, curH),
-                cornerRadius = CornerRadius(8f, 8f)
-            )
-            return
-        }
-
-        val walkOffset = sin(m.animPhase) * (mh * 0.03f)
-        val topY = (if (m.type == MonsterType.CACODEMON || m.type == MonsterType.LOST_SOUL) {
-            bottomY - mh - baseH * 0.18f
-        } else {
-            bottomY - mh
-        }) + walkOffset
-
-        val alpha = if (m.type.isPartialInvisible) 0.36f else 1.0f
-        val bodyColor = when {
-            m.state == MonsterState.PAIN -> Color(1f, 0.9f, 0.9f, alpha)
-            isInvuln -> Color(0.3f, 0.3f, 0.3f, alpha)
-            m.type == MonsterType.ZOMBIEMAN -> Color(0.46f * shade, 0.58f * shade, 0.38f * shade, alpha)
-            m.type == MonsterType.SHOTGUN_GUY -> Color(0.26f * shade, 0.28f * shade, 0.32f * shade, alpha)
-            m.type == MonsterType.IMP -> Color(0.60f * shade, 0.36f * shade, 0.20f * shade, alpha)
-            m.type == MonsterType.PINKY_DEMON -> Color(0.90f * shade, 0.42f * shade, 0.52f * shade, alpha)
-            m.type == MonsterType.SPECTRE -> Color(0.25f, 0.28f, 0.32f, 0.36f)
-            m.type == MonsterType.LOST_SOUL -> Color(0.96f, 0.65f, 0.18f, 0.92f)
-            m.type == MonsterType.CACODEMON -> Color(0.90f * shade, 0.16f * shade, 0.18f * shade, alpha)
-            m.type == MonsterType.BARON_OF_HELL -> Color(0.80f * shade, 0.28f * shade, 0.32f * shade, alpha)
-            m.type == MonsterType.CYBERDEMON -> Color(0.68f * shade, 0.38f * shade, 0.28f * shade, alpha)
-            else -> Color.Red
-        }
-
-        if (m.type == MonsterType.CACODEMON) {
-            drawOval(
-                color = bodyColor,
-                topLeft = Offset(screenX - mw * 0.55f, topY),
-                size = Size(mw * 1.1f, mh * 0.95f)
-            )
-            // Horns
-            val hornPath = Path().apply {
-                moveTo(screenX - mw * 0.35f, topY + mh * 0.15f)
-                lineTo(screenX - mw * 0.48f, topY - mh * 0.10f)
-                lineTo(screenX - mw * 0.18f, topY + mh * 0.08f)
-                close()
-                moveTo(screenX + mw * 0.35f, topY + mh * 0.15f)
-                lineTo(screenX + mw * 0.48f, topY - mh * 0.10f)
-                lineTo(screenX + mw * 0.18f, topY + mh * 0.08f)
-                close()
-            }
-            drawPath(hornPath, Color(0xFFECEFF1))
-            drawCircle(
-                color = Color(0xFF00FF66),
-                radius = mw * 0.16f,
-                center = Offset(screenX, topY + mh * 0.34f)
-            )
-            drawRoundRect(
-                color = Color(0xFF2979FF),
-                topLeft = Offset(screenX - mw * 0.32f, topY + mh * 0.60f),
-                size = Size(mw * 0.64f, mh * 0.20f),
-                cornerRadius = CornerRadius(4f, 4f)
-            )
-        } else {
-            val legW = mw * 0.28f
-            val legH = mh * 0.35f
-            val legSwing = sin(m.animPhase) * (legH * 0.2f)
-            val rightLegCol = if (m.type == MonsterType.CYBERDEMON) Color(0xFF78909C) else bodyColor
-
-            drawRect(
-                color = bodyColor,
-                topLeft = Offset(screenX - mw * 0.34f, bottomY - legH + legSwing),
-                size = Size(legW, legH)
-            )
-            drawRect(
-                color = rightLegCol,
-                topLeft = Offset(screenX + mw * 0.06f, bottomY - legH - legSwing),
-                size = Size(legW, legH)
-            )
-            drawRoundRect(
-                color = bodyColor,
-                topLeft = Offset(screenX - mw * 0.45f, topY + mh * 0.22f),
-                size = Size(mw * 0.90f, mh * 0.48f),
-                cornerRadius = CornerRadius(6f, 6f)
-            )
-            drawRoundRect(
-                color = bodyColor,
-                topLeft = Offset(screenX - mw * 0.26f, topY),
-                size = Size(mw * 0.52f, mh * 0.26f),
-                cornerRadius = CornerRadius(6f, 6f)
-            )
-
-            // Horns for Baron, Cyberdemon, and Imp spikes
-            if (m.type == MonsterType.BARON_OF_HELL || m.type == MonsterType.CYBERDEMON || m.type == MonsterType.IMP) {
-                val hornCol = Color(0xFFD7CCC8)
-                drawLine(
-                    color = hornCol,
-                    start = Offset(screenX - mw * 0.20f, topY + mh * 0.04f),
-                    end = Offset(screenX - mw * 0.34f, topY - mh * 0.12f),
-                    strokeWidth = (mw * 0.08f).coerceAtLeast(2f)
-                )
-                drawLine(
-                    color = hornCol,
-                    start = Offset(screenX + mw * 0.20f, topY + mh * 0.04f),
-                    end = Offset(screenX + mw * 0.34f, topY - mh * 0.12f),
-                    strokeWidth = (mw * 0.08f).coerceAtLeast(2f)
-                )
-            }
-
-            // Weapon held by zombies / Cyberdemon rocket arm
-            if (m.type == MonsterType.ZOMBIEMAN || m.type == MonsterType.SHOTGUN_GUY || m.type == MonsterType.CYBERDEMON) {
-                drawRect(
-                    color = Color(0xFF455A64),
-                    topLeft = Offset(screenX - mw * 0.35f, topY + mh * 0.40f),
-                    size = Size(mw * 0.75f, mh * 0.12f)
-                )
-            }
-
-            val eyeCol = if (m.type == MonsterType.BARON_OF_HELL) Color(0xFF00FF66) else Color(0xFFFF1744)
-            drawCircle(eyeCol, radius = (mw * 0.06f).coerceAtLeast(1.5f), center = Offset(screenX - mw * 0.1f, topY + mh * 0.11f))
-            drawCircle(eyeCol, radius = (mw * 0.06f).coerceAtLeast(1.5f), center = Offset(screenX + mw * 0.1f, topY + mh * 0.11f))
-
-            if (m.state == MonsterState.ATTACK) {
-                val flashCol = if (m.type == MonsterType.BARON_OF_HELL) Color(0xFF00FF66) else Color(0xFFFFAB00)
-                drawCircle(
-                    color = flashCol,
-                    radius = mw * 0.22f,
-                    center = Offset(screenX + mw * 0.35f, topY + mh * 0.42f)
-                )
-            }
-        }
-
-        if (m.hp < m.type.maxHp && m.hp > 0) {
-            val barW = mw * 0.85f
-            val barH = 4f
-            val ratio = (m.hp.toFloat() / m.type.maxHp.toFloat()).coerceIn(0f, 1f)
-            drawRect(
-                color = Color(0xAA000000),
-                topLeft = Offset(screenX - barW * 0.5f, topY - 8f),
-                size = Size(barW, barH)
-            )
-            drawRect(
-                color = Color(0xFFFF1744),
-                topLeft = Offset(screenX - barW * 0.5f, topY - 8f),
-                size = Size(barW * ratio, barH)
-            )
-        }
-    }
-
-    private fun DrawScope.drawItemSprite(
-        item: MapItemEntity,
-        screenX: Float,
-        halfH: Float,
-        baseH: Float,
-        shade: Float
-    ) {
-        val bottomY = halfH + baseH * 0.48f
-        if (item.type == ItemType.BARREL) {
-            if (item.barrelHp <= 0) {
-                drawCircle(
-                    color = Color(0xFFFF6D00),
-                    radius = baseH * 0.35f,
-                    center = Offset(screenX, bottomY - baseH * 0.28f)
-                )
-                drawCircle(
-                    color = Color(0xFFFFEA00),
-                    radius = baseH * 0.20f,
-                    center = Offset(screenX, bottomY - baseH * 0.28f)
-                )
-                return
-            }
-            val bw = baseH * 0.34f
-            val bh = baseH * 0.46f
-            drawRoundRect(
-                color = Color(0.32f * shade, 0.38f * shade, 0.30f * shade),
-                topLeft = Offset(screenX - bw * 0.5f, bottomY - bh),
-                size = Size(bw, bh),
-                cornerRadius = CornerRadius(4f, 4f)
-            )
-            drawOval(
-                color = Color(0xFF00E676),
-                topLeft = Offset(screenX - bw * 0.42f, bottomY - bh),
-                size = Size(bw * 0.84f, bh * 0.22f)
-            )
-            return
-        }
-
-        val iw = baseH * 0.28f
-        val ih = baseH * 0.28f
-        val color = when (item.type) {
-            ItemType.KEY_BLUE, ItemType.SOUL_SPHERE, ItemType.BLUE_ARMOR, ItemType.HEALTH_BONUS -> Color(0xFF2979FF)
-            ItemType.KEY_YELLOW, ItemType.AMMO_CLIP, ItemType.AMMO_BOX -> Color(0xFFFFD600)
-            ItemType.KEY_RED, ItemType.BERSERK, ItemType.SHELL_4, ItemType.SHELL_BOX -> Color(0xFFFF1744)
-            ItemType.GREEN_ARMOR, ItemType.ARMOR_BONUS, ItemType.INVULNERABILITY, ItemType.WEAPON_BFG -> Color(0xFF00E676)
-            ItemType.STIMPACK, ItemType.MEDIKIT -> Color(0xFFF5F5F5)
-            else -> Color(0xFFFF9100)
-        }
-
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(screenX - iw * 0.5f, bottomY - ih),
-            size = Size(iw, ih),
-            cornerRadius = CornerRadius(4f, 4f)
+    private fun renderWeaponToBuffer(engine: DoomEngine, isInvuln: Boolean) {
+        val isFiring = engine.weaponFlashTimer > 0f
+        val weaponPixels = DoomTextures.getWeaponSprite(
+            weapon = engine.currentWeapon,
+            isFiring = isFiring,
+            hasBerserk = engine.hasBerserk
         )
 
-        if (item.type == ItemType.MEDIKIT || item.type == ItemType.STIMPACK) {
-            drawRect(
-                color = Color(0xFFD50000),
-                topLeft = Offset(screenX - iw * 0.12f, bottomY - ih * 0.8f),
-                size = Size(iw * 0.24f, ih * 0.6f)
-            )
-            drawRect(
-                color = Color(0xFFD50000),
-                topLeft = Offset(screenX - iw * 0.3f, bottomY - ih * 0.62f),
-                size = Size(iw * 0.6f, ih * 0.24f)
-            )
-        }
-    }
+        val bobX = (sin(engine.walkBobPhase) * 9f * engine.walkBobAmplitude).toInt()
+        val bobY = (abs(cos(engine.walkBobPhase)) * 7f * engine.walkBobAmplitude).toInt()
 
-    private fun DrawScope.drawProjectileSprite(
-        proj: ProjectileEntity,
-        screenX: Float,
-        halfH: Float,
-        baseH: Float
-    ) {
-        val radius = when (proj.kind) {
-            ProjectileKind.BFG_ORB -> baseH * 0.22f
-            ProjectileKind.ROCKET -> baseH * 0.14f
-            else -> baseH * 0.12f
-        }.coerceAtLeast(3f)
+        val dstW = (FB_W * 0.62f).toInt()
+        val dstH = (FB_H * 0.44f).toInt()
+        val startX = (FB_W - dstW) / 2 + bobX
+        val startY = FB_H - dstH + bobY + 4
 
-        val col = when (proj.kind) {
-            ProjectileKind.BFG_ORB, ProjectileKind.BARON_PLASMA -> Color(0xFF00FF66)
-            ProjectileKind.PLASMA -> Color(0xFF40C4FF)
-            ProjectileKind.CACO_LIGHTNING -> Color(0xFFFF1744)
-            else -> Color(0xFFFF9100)
-        }
-        drawCircle(color = col, radius = radius, center = Offset(screenX, halfH))
-        drawCircle(color = Color.White, radius = radius * 0.45f, center = Offset(screenX, halfH))
-    }
+        val wShade = if (isFiring) 1.0f else 0.92f
+        val berserkTint = (engine.currentWeapon == WeaponType.FIST && engine.hasBerserk)
 
-    private fun DrawScope.renderFirstPersonWeapon(engine: DoomEngine, w: Float, h: Float) {
-        val bobX = sin(engine.walkBobPhase) * 12f * engine.walkBobAmplitude
-        val bobY = abs(cos(engine.walkBobPhase)) * 9f * engine.walkBobAmplitude
-        val recoilY = if (engine.weaponFlashTimer > 0f) 14f else 0f
+        for (dy in 0 until dstH) {
+            val py = startY + dy
+            if (py !in 0 until FB_H) continue
+            val srcY = (dy * DoomTextures.WEAPON_H) / dstH
+            val srcRow = srcY * DoomTextures.WEAPON_W
+            val dstRow = py * FB_W
 
-        val cx = w * 0.5f + bobX
-        val baseBottom = h + bobY + recoilY
-        val gunW = (minOf(w, h) * 0.30f).coerceAtLeast(68f)
-        val gunH = (h * 0.32f).coerceAtLeast(64f)
-
-        if (engine.weaponFlashTimer > 0f && !engine.currentWeapon.isMelee) {
-            val flashColor = when (engine.currentWeapon) {
-                WeaponType.PLASMA_RIFLE -> Color(0xFF40C4FF)
-                WeaponType.BFG_9000 -> Color(0xFF00FF66)
-                else -> Color(0xFFFFEA00)
-            }
-            drawCircle(
-                color = flashColor,
-                radius = gunW * 0.42f,
-                center = Offset(cx, baseBottom - gunH * 0.94f)
-            )
-            drawCircle(
-                color = Color.White,
-                radius = gunW * 0.20f,
-                center = Offset(cx, baseBottom - gunH * 0.94f)
-            )
-        }
-
-        val gloveColor = Color(0xFF6D4C41)
-
-        when (engine.currentWeapon) {
-            WeaponType.FIST -> {
-                val fistCol = if (engine.hasBerserk) Color(0xFFFF5252) else Color(0xFFD7A98C)
-                val punchOffset = if (engine.weaponFlashTimer > 0f) -gunH * 0.35f else 0f
-                drawRoundRect(
-                    color = fistCol,
-                    topLeft = Offset(cx - gunW * 0.32f, baseBottom - gunH * 0.65f + punchOffset),
-                    size = Size(gunW * 0.64f, gunH * 0.65f),
-                    cornerRadius = CornerRadius(14f, 14f)
-                )
-                drawRect(
-                    color = gloveColor,
-                    topLeft = Offset(cx - gunW * 0.34f, baseBottom - gunH * 0.42f + punchOffset),
-                    size = Size(gunW * 0.68f, gunH * 0.22f)
-                )
-            }
-            WeaponType.CHAINSAW -> {
-                drawRoundRect(
-                    color = Color(0xFF90A4AE),
-                    topLeft = Offset(cx - gunW * 0.16f, baseBottom - gunH * 0.94f),
-                    size = Size(gunW * 0.32f, gunH * 0.62f),
-                    cornerRadius = CornerRadius(6f, 6f)
-                )
-                drawRoundRect(
-                    color = Color(0xFFFF6D00),
-                    topLeft = Offset(cx - gunW * 0.38f, baseBottom - gunH * 0.42f),
-                    size = Size(gunW * 0.76f, gunH * 0.42f),
-                    cornerRadius = CornerRadius(8f, 8f)
-                )
-            }
-            WeaponType.BFG_9000 -> {
-                drawRoundRect(
-                    color = Color(0xFF546E7A),
-                    topLeft = Offset(cx - gunW * 0.55f, baseBottom - gunH * 0.88f),
-                    size = Size(gunW * 1.1f, gunH * 0.88f),
-                    cornerRadius = CornerRadius(10f, 10f)
-                )
-                drawCircle(
-                    color = Color(0xFF00E676),
-                    radius = gunW * 0.24f,
-                    center = Offset(cx, baseBottom - gunH * 0.55f)
-                )
-            }
-            else -> {
-                val barrelCol = when (engine.currentWeapon) {
-                    WeaponType.SHOTGUN -> Color(0xFF37474F)
-                    WeaponType.CHAINGUN -> Color(0xFF607D8B)
-                    WeaponType.ROCKET_LAUNCHER -> Color(0xFF4E342E)
-                    WeaponType.PLASMA_RIFLE -> Color(0xFF37474F)
-                    else -> Color(0xFF546E7A)
+            for (dx in 0 until dstW) {
+                val px = startX + dx
+                if (px !in 0 until FB_W) continue
+                val srcX = (dx * DoomTextures.WEAPON_W) / dstW
+                var col = weaponPixels[srcRow + srcX]
+                if ((col ushr 24) != 0) {
+                    if (berserkTint) {
+                        val r = (((col ushr 16) and 0xFF) + 45).coerceAtMost(255)
+                        val g = ((col ushr 8) and 0xFF)
+                        val b = (col and 0xFF)
+                        col = DoomTextures.rgb(r, g, b)
+                    }
+                    frameBuffer[dstRow + px] = DoomTextures.shadeColor(col, wShade, isInvuln)
                 }
-                drawRoundRect(
-                    color = barrelCol,
-                    topLeft = Offset(cx - gunW * 0.22f, baseBottom - gunH * 0.90f),
-                    size = Size(gunW * 0.44f, gunH * 0.90f),
-                    cornerRadius = CornerRadius(8f, 8f)
-                )
-                drawRect(
-                    color = Color(0xFFB0BEC5),
-                    topLeft = Offset(cx - gunW * 0.05f, baseBottom - gunH * 0.88f),
-                    size = Size(gunW * 0.10f, gunH * 0.55f)
-                )
-                // Brown marine glove at bottom of gun
-                drawRoundRect(
-                    color = gloveColor,
-                    topLeft = Offset(cx - gunW * 0.28f, baseBottom - gunH * 0.26f),
-                    size = Size(gunW * 0.56f, gunH * 0.26f),
-                    cornerRadius = CornerRadius(8f, 8f)
-                )
+            }
+        }
+    }
+
+    private fun applyScreenPostEffects(engine: DoomEngine, halfH: Int) {
+        var tintR = 0
+        var tintG = 0
+        var tintB = 0
+        var alpha = 0 // 0..256
+
+        if (engine.damageFlashTimer > 0f) {
+            tintR = 240; tintG = 15; tintB = 10
+            alpha = (engine.damageFlashTimer * 170f).toInt().coerceIn(0, 135)
+        } else if (engine.teleportFlashTimer > 0f) {
+            tintR = 45; tintG = 250; tintB = 85
+            alpha = (engine.teleportFlashTimer * 190f).toInt().coerceIn(0, 145)
+        } else if (engine.pickupFlashTimer > 0f) {
+            tintR = 250; tintG = 210; tintB = 55
+            alpha = (engine.pickupFlashTimer * 165f).toInt().coerceIn(0, 90)
+        } else if (engine.radSuitTimer > 0f) {
+            tintR = 20; tintG = 200; tintB = 45
+            alpha = 34
+        }
+
+        if (alpha > 0) {
+            val invA = 256 - alpha
+            val preR = tintR * alpha
+            val preG = tintG * alpha
+            val preB = tintB * alpha
+            for (i in frameBuffer.indices) {
+                val c = frameBuffer[i]
+                val r = (((c ushr 16) and 0xFF) * invA + preR) ushr 8
+                val g = (((c ushr 8) and 0xFF) * invA + preG) ushr 8
+                val b = ((c and 0xFF) * invA + preB) ushr 8
+                frameBuffer[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+
+        // Crisp tactical pixel crosshair
+        val cx = FB_W / 2
+        val cy = halfH
+        val crossCol = DoomTextures.rgb(50, 250, 100)
+        for (d in -4..4) {
+            if (d != 0) {
+                if (cx + d in 0 until FB_W) frameBuffer[cy * FB_W + (cx + d)] = crossCol
+                if (cy + d in 0 until FB_H) frameBuffer[(cy + d) * FB_W + cx] = crossCol
             }
         }
     }
@@ -900,57 +687,28 @@ object DoomRenderer {
     }
 
     fun DrawScope.renderDoomguyFace(engine: DoomEngine) {
-        val w = size.width
-        val h = size.height
-        drawRect(color = Color(0xFF22252A), topLeft = Offset.Zero, size = Size(w, h))
-
-        val skinColor = if (engine.playerHealth <= 0) Color(0xFF8D6E63) else Color(0xFFE0AC8B)
-        drawRoundRect(
-            color = Color(0xFF5D4037),
-            topLeft = Offset(w * 0.18f, h * 0.08f),
-            size = Size(w * 0.64f, h * 0.25f),
-            cornerRadius = CornerRadius(5f, 5f)
-        )
-        drawRoundRect(
-            color = skinColor,
-            topLeft = Offset(w * 0.20f, h * 0.20f),
-            size = Size(w * 0.60f, h * 0.68f),
-            cornerRadius = CornerRadius(6f, 6f)
-        )
-
+        val dstW = size.width.toInt().coerceAtLeast(1)
+        val dstH = size.height.toInt().coerceAtLeast(1)
         val isGod = engine.godModeCheat || engine.invulnerableTimer > 0f
-        val eyeOffset = engine.faceLookDir * (w * 0.05f)
-        val eyeColor = when {
-            engine.playerHealth <= 0 -> Color(0xFF3E2723)
-            isGod -> Color(0xFFFFEA00)
-            else -> Color(0xFF1A237E)
-        }
-
-        drawCircle(eyeColor, radius = w * 0.07f, center = Offset(w * 0.36f + eyeOffset, h * 0.44f))
-        drawCircle(eyeColor, radius = w * 0.07f, center = Offset(w * 0.64f + eyeOffset, h * 0.44f))
-
-        if (engine.playerHealth < 75 && !isGod) {
-            drawCircle(Color(0xFFC62828), radius = w * 0.06f, center = Offset(w * 0.50f, h * 0.58f))
-        }
-        if (engine.playerHealth < 40 && !isGod) {
-            drawCircle(Color(0xFFB71C1C), radius = w * 0.09f, center = Offset(w * 0.32f, h * 0.66f))
-            drawCircle(Color(0xFFB71C1C), radius = w * 0.08f, center = Offset(w * 0.68f, h * 0.64f))
-        }
-
-        val mouthColor = if (engine.faceGrinTimer > 0f) Color.White else Color(0xFF4E342E)
-        val mouthH = if (engine.facePainTimer > 0f) h * 0.16f else h * 0.08f
-        drawRoundRect(
-            color = mouthColor,
-            topLeft = Offset(w * 0.34f, h * 0.68f),
-            size = Size(w * 0.32f, mouthH),
-            cornerRadius = CornerRadius(3f, 3f)
+        val facePixels = DoomTextures.renderDoomguyFacePixels(
+            health = engine.playerHealth,
+            isGod = isGod,
+            lookDir = engine.faceLookDir,
+            isPain = engine.facePainTimer > 0f,
+            isGrin = engine.faceGrinTimer > 0f
         )
-
-        drawRect(
-            color = Color(0xFF546E7A),
-            topLeft = Offset.Zero,
-            size = Size(w, h),
-            style = Stroke(width = 2f)
+        val bmp = PlatformServices.pixelsToImageBitmap(
+            pixels = facePixels,
+            width = DoomTextures.FACE_SIZE,
+            height = DoomTextures.FACE_SIZE
+        )
+        drawImage(
+            image = bmp,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(DoomTextures.FACE_SIZE, DoomTextures.FACE_SIZE),
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(dstW, dstH),
+            filterQuality = FilterQuality.None
         )
     }
 }

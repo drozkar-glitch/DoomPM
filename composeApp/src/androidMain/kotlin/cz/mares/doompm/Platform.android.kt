@@ -1,6 +1,7 @@
 package cz.mares.doompm
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -10,6 +11,8 @@ import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -28,6 +31,18 @@ actual object PlatformServices {
     private val audioExecutor = Executors.newFixedThreadPool(4)
     private val netExecutor = Executors.newCachedThreadPool()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val bitmapCache = HashMap<Int, Bitmap>()
+
+    actual fun pixelsToImageBitmap(pixels: IntArray, width: Int, height: Int): ImageBitmap {
+        val key = (width shl 16) or height
+        var bmp = bitmapCache[key]
+        if (bmp == null || bmp.width != width || bmp.height != height) {
+            bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmapCache[key] = bmp
+        }
+        bmp.setPixels(pixels, 0, width, 0, 0, width, height)
+        return bmp.asImageBitmap()
+    }
 
     actual fun playWavBytes(wavData: ByteArray) {
         if (wavData.size <= 44) return

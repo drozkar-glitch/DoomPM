@@ -2,8 +2,14 @@
 
 package cz.mares.doompm
 
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asComposeImageBitmap
 import kotlinx.cinterop.allocArrayOf
 import kotlinx.cinterop.memScoped
+import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.ImageInfo
 import platform.AVFAudio.AVAudioPlayer
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
@@ -27,6 +33,32 @@ import platform.darwin.dispatch_get_main_queue
 actual object PlatformServices {
     private val activePlayers = ArrayList<AVAudioPlayer>(8)
     private var playerWriteIdx = 0
+    private val byteBufferCache = HashMap<Int, ByteArray>()
+
+    actual fun pixelsToImageBitmap(pixels: IntArray, width: Int, height: Int): ImageBitmap {
+        val count = width * height
+        val byteLen = count * 4
+        var bytes = byteBufferCache[byteLen]
+        if (bytes == null || bytes.size != byteLen) {
+            bytes = ByteArray(byteLen)
+            byteBufferCache[byteLen] = bytes
+        }
+
+        var bi = 0
+        for (i in 0 until count) {
+            val c = pixels[i]
+            bytes[bi] = (c and 0xFF).toByte()
+            bytes[bi + 1] = ((c ushr 8) and 0xFF).toByte()
+            bytes[bi + 2] = ((c ushr 16) and 0xFF).toByte()
+            bytes[bi + 3] = ((c ushr 24) and 0xFF).toByte()
+            bi += 4
+        }
+
+        val info = ImageInfo(width, height, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
+        val bmp = Bitmap()
+        bmp.installPixels(info, bytes, width * 4)
+        return bmp.asComposeImageBitmap()
+    }
 
     actual fun playWavBytes(wavData: ByteArray) {
         if (wavData.isEmpty()) return
