@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Glow ring -->
+    <path
+        android:fillColor="#FF4500"
+        android:pathData="M54,22 L62,38 L80,38 L66,49 L71,66 L54,56 L37,66 L42,49 L28,38 L46,38 Z" />
+    <!-- Doom Marine Helmet Outer Shell -->
+    <path
+        android:fillColor="#3A5F3A"
+        android:pathData="M34,34 L44,25 L64,25 L74,34 L77,54 L71,74 L59,81 L49,81 L37,74 L31,54 Z" />
+    <!-- Helmet Top Ridge -->
+    <path
+        android:fillColor="#528252"
+        android:pathData="M45,25 L63,25 L66,35 L42,35 Z" />
+    <!-- Visor Frame -->
+    <path
+        android:fillColor="#1E281E"
+        android:pathData="M36,39 L72,39 L70,56 L54,61 L38,56 Z" />
+    <!-- Glowing Visor Glass -->
+    <path
+        android:fillColor="#FF2A00"
+        android:pathData="M39,42 L69,42 L67,53 L54,57 L41,53 Z" />
+    <path
+        android:fillColor="#FFCC00"
+        android:pathData="M42,44 L56,44 L51,51 L41,49 Z" />
+    <!-- Respirator Mouthpiece -->
+    <path
+        android:fillColor="#6A736A"
+        android:pathData="M43,62 L65,62 L62,77 L46,77 Z" />
+    <!-- Vent Grilles -->
+    <path
+        android:fillColor="#1A1E1A"
+        android:pathData="M47,65h14v2h-14z M47,69h14v2h-14z M47,73h14v2h-14z" />
+</vector>
