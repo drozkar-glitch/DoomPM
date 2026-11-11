@@ -9,9 +9,12 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -43,9 +48,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.mares.doompm.DoomRenderer.render3DView
@@ -61,172 +68,179 @@ enum class AppScreen {
 
 @Composable
 fun App() {
+    val baseDensity = LocalDensity.current
+    val fixedDensity = remember(baseDensity.density) {
+        Density(density = baseDensity.density, fontScale = 1f)
+    }
+
     MaterialTheme {
-        val engine = remember { DoomEngine() }
-        var currentScreen by remember { mutableStateOf(AppScreen.MENU) }
-        var selectedDifficulty by remember { mutableStateOf(Difficulty.MEDIUM) }
-        var selectedStartMap by remember { mutableIntStateOf(0) }
+        CompositionLocalProvider(LocalDensity provides fixedDensity) {
+            val engine = remember { DoomEngine() }
+            var currentScreen by remember { mutableStateOf(AppScreen.MENU) }
+            var selectedDifficulty by remember { mutableStateOf(Difficulty.MEDIUM) }
+            var selectedStartMap by remember { mutableIntStateOf(0) }
 
-        var frameTick by remember { mutableIntStateOf(0) }
-        var showAutomap by remember { mutableStateOf(false) }
-        var showCheatDialog by remember { mutableStateOf(false) }
+            var frameTick by remember { mutableIntStateOf(0) }
+            var showAutomap by remember { mutableStateOf(false) }
+            var showCheatDialog by remember { mutableStateOf(false) }
 
-        var holdFwd by remember { mutableStateOf(false) }
-        var holdBack by remember { mutableStateOf(false) }
-        var holdStrafeL by remember { mutableStateOf(false) }
-        var holdStrafeR by remember { mutableStateOf(false) }
-        var holdTurnL by remember { mutableStateOf(false) }
-        var holdTurnR by remember { mutableStateOf(false) }
-        var dragTurnAccum by remember { mutableFloatStateOf(0f) }
-        var isFiringHeld by remember { mutableStateOf(false) }
+            var holdFwd by remember { mutableStateOf(false) }
+            var holdBack by remember { mutableStateOf(false) }
+            var holdStrafeL by remember { mutableStateOf(false) }
+            var holdStrafeR by remember { mutableStateOf(false) }
+            var holdTurnL by remember { mutableStateOf(false) }
+            var holdTurnR by remember { mutableStateOf(false) }
+            var dragTurnAccum by remember { mutableFloatStateOf(0f) }
+            var isFiringHeld by remember { mutableStateOf(false) }
 
-        var soundOn by remember { mutableStateOf(true) }
-        var musicOn by remember { mutableStateOf(true) }
+            var soundOn by remember { mutableStateOf(true) }
+            var musicOn by remember { mutableStateOf(true) }
 
-        fun clearHoldInputs() {
-            holdFwd = false
-            holdBack = false
-            holdStrafeL = false
-            holdStrafeR = false
-            holdTurnL = false
-            holdTurnR = false
-            dragTurnAccum = 0f
-            isFiringHeld = false
-        }
+            fun clearHoldInputs() {
+                holdFwd = false
+                holdBack = false
+                holdStrafeL = false
+                holdStrafeR = false
+                holdTurnL = false
+                holdTurnR = false
+                dragTurnAccum = 0f
+                isFiringHeld = false
+            }
 
-        LaunchedEffect(currentScreen) {
-            var lastNanos = 0L
-            while (currentScreen == AppScreen.PLAYING) {
-                withFrameNanos { nowNanos ->
-                    val dt = if (lastNanos == 0L) 0.016f else ((nowNanos - lastNanos) / 1_000_000_000f)
-                    lastNanos = nowNanos
+            LaunchedEffect(currentScreen) {
+                var lastNanos = 0L
+                while (currentScreen == AppScreen.PLAYING) {
+                    withFrameNanos { nowNanos ->
+                        val dt = if (lastNanos == 0L) 0.016f else ((nowNanos - lastNanos) / 1_000_000_000f)
+                        lastNanos = nowNanos
 
-                    val moveFwd = (if (holdFwd) 1f else 0f) - (if (holdBack) 1f else 0f)
-                    val moveStrafe = (if (holdStrafeR) 1f else 0f) - (if (holdStrafeL) 1f else 0f)
-                    val turnDir = (if (holdTurnR) 1f else 0f) - (if (holdTurnL) 1f else 0f)
-                    val turnDelta = turnDir * dt * 2.45f + dragTurnAccum
-                    dragTurnAccum = 0f
+                        val moveFwd = (if (holdFwd) 1f else 0f) - (if (holdBack) 1f else 0f)
+                        val moveStrafe = (if (holdStrafeR) 1f else 0f) - (if (holdStrafeL) 1f else 0f)
+                        val turnDir = (if (holdTurnR) 1f else 0f) - (if (holdTurnL) 1f else 0f)
+                        val turnDelta = turnDir * dt * 2.45f + dragTurnAccum
+                        dragTurnAccum = 0f
 
-                    engine.update(
-                        dt = dt,
-                        moveForward = moveFwd,
-                        moveStrafe = moveStrafe,
-                        turnDelta = turnDelta,
-                        isFiring = isFiringHeld
-                    )
-                    DoomAudioManager.updateMusic(
-                        nowMs = PlatformServices.currentTimeMillis(),
-                        isPlayingGame = (engine.completedLevelStats == null && !engine.isPlayerDead)
-                    )
-                    frameTick++
+                        engine.update(
+                            dt = dt,
+                            moveForward = moveFwd,
+                            moveStrafe = moveStrafe,
+                            turnDelta = turnDelta,
+                            isFiring = isFiringHeld
+                        )
+                        DoomAudioManager.updateMusic(
+                            nowMs = PlatformServices.currentTimeMillis(),
+                            isPlayingGame = (engine.completedLevelStats == null && !engine.isPlayerDead)
+                        )
+                        frameTick++
+                    }
                 }
             }
-        }
 
-        Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF0E1013))
-                .windowInsetsPadding(WindowInsets.safeDrawing),
-            color = Color(0xFF0E1013)
-        ) {
-            when (currentScreen) {
-                AppScreen.MENU -> {
-                    MainMenuScreen(
-                        selectedDifficulty = selectedDifficulty,
-                        onSelectDifficulty = { selectedDifficulty = it },
-                        selectedStartMap = selectedStartMap,
-                        onSelectStartMap = { selectedStartMap = it },
-                        soundOn = soundOn,
-                        musicOn = musicOn,
-                        onToggleSound = {
-                            soundOn = !soundOn
-                            DoomAudioManager.soundEnabled = soundOn
-                        },
-                        onToggleMusic = {
-                            musicOn = !musicOn
-                            DoomAudioManager.musicEnabled = musicOn
-                        },
-                        onStartGame = {
-                            clearHoldInputs()
-                            engine.startNewCampaign(selectedDifficulty, selectedStartMap)
-                            showAutomap = false
-                            currentScreen = AppScreen.PLAYING
-                        },
-                        onOpenLeaderboard = { currentScreen = AppScreen.LEADERBOARD },
-                        onOpenGuide = { currentScreen = AppScreen.GUIDE }
-                    )
-                }
-
-                AppScreen.PLAYING -> {
-                    val summary = engine.completedLevelStats
-                    if (summary != null) {
-                        LaunchedEffect(summary) {
-                            clearHoldInputs()
-                        }
-                        IntermissionScreen(
-                            stats = summary,
-                            difficulty = engine.difficulty,
-                            onNextLevel = {
-                                if (summary.isEpisodeCompleted) {
-                                    currentScreen = AppScreen.LEADERBOARD
-                                } else {
-                                    engine.loadMap(summary.nextMapIndex, resetInventory = false)
-                                }
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0E1013))
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
+                color = Color(0xFF0E1013)
+            ) {
+                when (currentScreen) {
+                    AppScreen.MENU -> {
+                        MainMenuScreen(
+                            selectedDifficulty = selectedDifficulty,
+                            onSelectDifficulty = { selectedDifficulty = it },
+                            selectedStartMap = selectedStartMap,
+                            onSelectStartMap = { selectedStartMap = it },
+                            soundOn = soundOn,
+                            musicOn = musicOn,
+                            onToggleSound = {
+                                soundOn = !soundOn
+                                DoomAudioManager.soundEnabled = soundOn
                             },
-                            onBackToMenu = {
+                            onToggleMusic = {
+                                musicOn = !musicOn
+                                DoomAudioManager.musicEnabled = musicOn
+                            },
+                            onStartGame = {
                                 clearHoldInputs()
-                                currentScreen = AppScreen.MENU
+                                engine.startNewCampaign(selectedDifficulty, selectedStartMap)
+                                showAutomap = false
+                                currentScreen = AppScreen.PLAYING
+                            },
+                            onOpenLeaderboard = { currentScreen = AppScreen.LEADERBOARD },
+                            onOpenGuide = { currentScreen = AppScreen.GUIDE }
+                        )
+                    }
+
+                    AppScreen.PLAYING -> {
+                        val summary = engine.completedLevelStats
+                        if (summary != null) {
+                            LaunchedEffect(summary) {
+                                clearHoldInputs()
                             }
-                        )
-                    } else {
-                        GamePlayScreen(
-                            engine = engine,
-                            frameTick = frameTick,
-                            showAutomap = showAutomap,
-                            onToggleAutomap = { showAutomap = !showAutomap },
-                            onOpenCheats = {
-                                clearHoldInputs()
-                                showCheatDialog = true
-                            },
-                            onBackToMenu = {
-                                clearHoldInputs()
-                                currentScreen = AppScreen.MENU
-                            },
-                            onHoldFwd = { holdFwd = it },
-                            onHoldBack = { holdBack = it },
-                            onHoldStrafeL = { holdStrafeL = it },
-                            onHoldStrafeR = { holdStrafeR = it },
-                            onHoldTurnL = { holdTurnL = it },
-                            onHoldTurnR = { holdTurnR = it },
-                            onDragTurn = { delta -> dragTurnAccum += delta },
-                            onFireHold = { held ->
-                                isFiringHeld = held
-                                if (held) engine.fireCurrentWeapon()
-                            },
-                            onUseAction = { engine.triggerUseAction() }
+                            IntermissionScreen(
+                                stats = summary,
+                                difficulty = engine.difficulty,
+                                onNextLevel = {
+                                    if (summary.isEpisodeCompleted) {
+                                        currentScreen = AppScreen.LEADERBOARD
+                                    } else {
+                                        engine.loadMap(summary.nextMapIndex, resetInventory = false)
+                                    }
+                                },
+                                onBackToMenu = {
+                                    clearHoldInputs()
+                                    currentScreen = AppScreen.MENU
+                                }
+                            )
+                        } else {
+                            GamePlayScreen(
+                                engine = engine,
+                                frameTick = frameTick,
+                                showAutomap = showAutomap,
+                                onToggleAutomap = { showAutomap = !showAutomap },
+                                onOpenCheats = {
+                                    clearHoldInputs()
+                                    showCheatDialog = true
+                                },
+                                onBackToMenu = {
+                                    clearHoldInputs()
+                                    currentScreen = AppScreen.MENU
+                                },
+                                onHoldFwd = { holdFwd = it },
+                                onHoldBack = { holdBack = it },
+                                onHoldStrafeL = { holdStrafeL = it },
+                                onHoldStrafeR = { holdStrafeR = it },
+                                onHoldTurnL = { holdTurnL = it },
+                                onHoldTurnR = { holdTurnR = it },
+                                onDragTurn = { delta -> dragTurnAccum += delta },
+                                onFireHold = { held ->
+                                    isFiringHeld = held
+                                    if (held) engine.fireCurrentWeapon()
+                                },
+                                onUseAction = { engine.triggerUseAction() }
+                            )
+                        }
+
+                        if (showCheatDialog) {
+                            CheatTerminalDialog(
+                                engine = engine,
+                                onDismiss = { showCheatDialog = false }
+                            )
+                        }
+                    }
+
+                    AppScreen.LEADERBOARD -> {
+                        LeaderboardScreen(
+                            initialDifficulty = selectedDifficulty,
+                            lastScore = engine.totalScore,
+                            lastTimeSec = engine.campaignTimeSec.toInt(),
+                            onBack = { currentScreen = AppScreen.MENU }
                         )
                     }
 
-                    if (showCheatDialog) {
-                        CheatTerminalDialog(
-                            engine = engine,
-                            onDismiss = { showCheatDialog = false }
-                        )
+                    AppScreen.GUIDE -> {
+                        GuideAndSecretsScreen(onBack = { currentScreen = AppScreen.MENU })
                     }
-                }
-
-                AppScreen.LEADERBOARD -> {
-                    LeaderboardScreen(
-                        initialDifficulty = selectedDifficulty,
-                        lastScore = engine.totalScore,
-                        lastTimeSec = engine.campaignTimeSec.toInt(),
-                        onBack = { currentScreen = AppScreen.MENU }
-                    )
-                }
-
-                AppScreen.GUIDE -> {
-                    GuideAndSecretsScreen(onBack = { currentScreen = AppScreen.MENU })
                 }
             }
         }
@@ -247,31 +261,34 @@ private fun MainMenuScreen(
     onOpenLeaderboard: () -> Unit,
     onOpenGuide: () -> Unit
 ) {
+    val compactBtnPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
             text = "DOOM I",
             color = Color(0xFFFF2A00),
-            fontSize = 42.sp,
+            fontSize = 40.sp,
             fontWeight = FontWeight.ExtraBold
         )
         Text(
             text = "Knee-Deep in the Dead (VGA 3D Pixel Edition)",
             color = Color(0xFFFFCC00),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(14.dp))
 
         Text(
             text = "VYBER POČÁTEČNÍ MAPU EPIZODY 1:",
             color = Color(0xFFB0BEC5),
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(6.dp))
@@ -291,15 +308,17 @@ private fun MainMenuScreen(
                     val prev = (selectedStartMap - 1 + DoomMaps.allMaps.size) % DoomMaps.allMaps.size
                     onSelectStartMap(prev)
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F))
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
+                modifier = Modifier.size(42.dp, 38.dp)
             ) {
-                Text("◀")
+                Text("◀", fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
             Text(
                 text = "${curMap.code}: ${curMap.title}",
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .weight(1f)
@@ -310,9 +329,11 @@ private fun MainMenuScreen(
                     val next = (selectedStartMap + 1) % DoomMaps.allMaps.size
                     onSelectStartMap(next)
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F))
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
+                modifier = Modifier.size(42.dp, 38.dp)
             ) {
-                Text("▶")
+                Text("▶", fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
         }
 
@@ -320,7 +341,7 @@ private fun MainMenuScreen(
         Text(
             text = "ZVOL OBTÍŽNOST (SKILL LEVEL):",
             color = Color(0xFFB0BEC5),
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(6.dp))
@@ -352,7 +373,7 @@ private fun MainMenuScreen(
                         text = diff.titleCz,
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -372,15 +393,16 @@ private fun MainMenuScreen(
 
         Button(
             onClick = onStartGame,
+            contentPadding = compactBtnPadding,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .defaultMinSize(minHeight = 52.dp)
         ) {
             Text(
                 text = "🔥 SPUSTIT HRU DOOM I 🔥",
                 color = Color.White,
-                fontSize = 18.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.ExtraBold,
                 maxLines = 1
             )
@@ -394,6 +416,7 @@ private fun MainMenuScreen(
         ) {
             Button(
                 onClick = onOpenLeaderboard,
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E88E5)),
                 modifier = Modifier.weight(1f)
             ) {
@@ -401,10 +424,11 @@ private fun MainMenuScreen(
             }
             Button(
                 onClick = onOpenGuide,
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF43A047)),
                 modifier = Modifier.weight(1f)
             ) {
-                Text("🕵️ Skrýše & Cheaty", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                Text("🕵 Skrýše & Cheaty", fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
         }
 
@@ -416,21 +440,23 @@ private fun MainMenuScreen(
         ) {
             Button(
                 onClick = onToggleSound,
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (soundOn) Color(0xFF37474F) else Color(0xFF263238)
                 ),
                 modifier = Modifier.weight(1f)
             ) {
-                Text(if (soundOn) "🔊 Zvuky: ZAP" else "🔇 Zvuky: VYP", fontSize = 13.sp, maxLines = 1)
+                Text(if (soundOn) "🔊 Zvuky: ZAP" else "🔇 Zvuky: VYP", fontSize = 12.sp, maxLines = 1)
             }
             Button(
                 onClick = onToggleMusic,
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (musicOn) Color(0xFF37474F) else Color(0xFF263238)
                 ),
                 modifier = Modifier.weight(1f)
             ) {
-                Text(if (musicOn) "🎸 Riff E1M1: ZAP" else "🎸 Riff E1M1: VYP", fontSize = 13.sp, maxLines = 1)
+                Text(if (musicOn) "🎸 Riff E1M1: ZAP" else "🎸 Riff E1M1: VYP", fontSize = 12.sp, maxLines = 1)
             }
         }
 
@@ -464,36 +490,36 @@ private fun GamePlayScreen(
     val tick = frameTick
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 1. Clean Non-Clipping Top Tactical Bar
+        // 1. Flexible Non-Clipping Top Tactical Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
+                .wrapContentHeight()
                 .background(Color(0xFF16191E))
-                .padding(horizontal = 6.dp),
+                .padding(horizontal = 8.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 4.dp),
+                    .padding(end = 6.dp),
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = "${engine.currentMapDef.code} • Skóre: ${engine.totalScore} • ${FirebaseLeaderboard.formatTimeMmSs(engine.levelTimeSec.toInt())}",
+                    text = "${engine.currentMapDef.code} • Skóre ${engine.totalScore} • ${FirebaseLeaderboard.formatTimeMmSs(engine.levelTimeSec.toInt())}",
                     color = Color(0xFFFFD600),
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,
-                    lineHeight = 13.sp,
+                    lineHeight = 14.sp,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "Zabití ${engine.killsCount}/${engine.totalMonsters} • Skrýše ${engine.secretsCount}/${engine.totalSecrets} • Věci ${engine.itemsCount}/${engine.totalItems}",
+                    text = "Zabití ${engine.killsCount}/${engine.totalMonsters} • Skrýše ${engine.secretsCount}/${engine.totalSecrets}",
                     color = Color(0xFFB0BEC5),
                     fontSize = 10.sp,
-                    lineHeight = 12.sp,
+                    lineHeight = 13.sp,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
@@ -505,17 +531,17 @@ private fun GamePlayScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TopCompactActionChip(
-                    label = "🗺️ Mapa",
+                    label = "Mapa",
                     bgColor = if (showAutomap) Color(0xFF00C853) else Color(0xFF37474F),
                     onClick = onToggleAutomap
                 )
                 TopCompactActionChip(
-                    label = "⌨️ IDDQD",
+                    label = "IDDQD",
                     bgColor = Color(0xFF6A1B9A),
                     onClick = onOpenCheats
                 )
                 TopCompactActionChip(
-                    label = "⏸️ Menu",
+                    label = "Menu",
                     bgColor = Color(0xFF455A64),
                     onClick = onBackToMenu
                 )
@@ -589,6 +615,7 @@ private fun GamePlayScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
                         onClick = { engine.loadMap(engine.currentMapIndex, resetInventory = true) },
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000))
                     ) {
                         Text("🔄 Zkusit mapu ${engine.currentMapDef.code} znovu", fontWeight = FontWeight.Bold)
@@ -597,10 +624,10 @@ private fun GamePlayScreen(
             }
         }
 
-        // 3. Classic DOOM Stone Status Bar (Tall enough so labels never clip!)
+        // 3. Classic DOOM Stone Status Bar (Intrinsic height so labels never clip!)
         ClassicDoomStatusBar(engine = engine, frameTick = tick)
 
-        // 4. Proportional Multi-Touch Controls Bar
+        // 4. Safe-Padded Multi-Touch Controls Bar
         TouchControlsBar(
             onHoldFwd = onHoldFwd,
             onHoldBack = onHoldBack,
@@ -624,16 +651,17 @@ private fun TopCompactActionChip(
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .height(28.dp)
-            .background(bgColor, RoundedCornerShape(5.dp))
+            .defaultMinSize(minHeight = 28.dp)
+            .background(bgColor, RoundedCornerShape(6.dp))
+            .border(1.dp, Color(0xFF607D8B), RoundedCornerShape(6.dp))
             .clickable { onClick() }
-            .padding(horizontal = 5.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
         Text(
             text = label,
             color = Color.White,
-            fontSize = 10.sp,
-            lineHeight = 11.sp,
+            fontSize = 11.sp,
+            lineHeight = 13.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false
@@ -651,14 +679,15 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
             .fillMaxWidth()
             .background(Color(0xFF363A40))
             .border(1.dp, Color(0xFF546E7A))
-            .padding(horizontal = 5.dp, vertical = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 5.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp),
+                .height(IntrinsicSize.Min)
+                .defaultMinSize(minHeight = 50.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             StatusBox(
                 label = "MUNICE",
@@ -670,13 +699,14 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                 label = "ZDRAVÍ",
                 value = "${engine.playerHealth}%",
                 valueColor = Color(0xFFFF5252),
-                modifier = Modifier.weight(1.08f)
+                modifier = Modifier.weight(1.06f)
             )
 
             Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(48.dp)
-                    .border(1.dp, Color(0xFF607D8B), RoundedCornerShape(3.dp))
+                    .size(50.dp)
+                    .border(1.dp, Color(0xFF607D8B), RoundedCornerShape(4.dp))
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     if (frameTick >= 0) {
@@ -689,7 +719,7 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                 label = "BRNĚNÍ",
                 value = "${engine.playerArmor}%",
                 valueColor = Color(0xFF00E676),
-                modifier = Modifier.weight(1.08f)
+                modifier = Modifier.weight(1.06f)
             )
 
             Column(
@@ -699,13 +729,13 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                     .weight(0.95f)
                     .fillMaxHeight()
                     .background(Color(0xFF1E2227), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                    .padding(horizontal = 4.dp, vertical = 4.dp)
             ) {
                 Text(
                     text = "KLÍČE",
                     color = Color(0xFFB0BEC5),
-                    fontSize = 8.sp,
-                    lineHeight = 10.sp,
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     softWrap = false
@@ -727,31 +757,31 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
             }
         }
 
-        Spacer(modifier = Modifier.height(3.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(26.dp),
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                .wrapContentHeight(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             for (slot in 1..7) {
                 val owned = WeaponType.entries.any { it.slot == slot && engine.ownedWeapons.contains(it) }
                 val active = (engine.currentWeapon.slot == slot)
                 val label = when (slot) {
-                    1 -> if (engine.ownedWeapons.contains(WeaponType.CHAINSAW)) "1:Pila" else "1:Pěst"
-                    2 -> "2:Pist"
-                    3 -> "3:Brok"
-                    4 -> "4:Kulo"
-                    5 -> "5:Rake"
-                    6 -> "6:Plaz"
-                    else -> "7:BFG"
+                    1 -> if (engine.ownedWeapons.contains(WeaponType.CHAINSAW)) "1 Pila" else "1 Pěst"
+                    2 -> "2 Pist"
+                    3 -> "3 Brok"
+                    4 -> "4 Kulo"
+                    5 -> "5 Rake"
+                    6 -> "6 Plaz"
+                    else -> "7 BFG"
                 }
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
+                        .defaultMinSize(minHeight = 28.dp)
                         .background(
                             when {
                                 active -> Color(0xFFD50000)
@@ -766,12 +796,13 @@ private fun ClassicDoomStatusBar(engine: DoomEngine, frameTick: Int) {
                             RoundedCornerShape(4.dp)
                         )
                         .clickable(enabled = owned) { engine.selectWeaponSlot(slot) }
+                        .padding(horizontal = 2.dp, vertical = 4.dp)
                 ) {
                     Text(
                         text = label,
                         color = if (owned) Color.White else Color(0xFF546E7A),
-                        fontSize = 9.sp,
-                        lineHeight = 11.sp,
+                        fontSize = 9.5.sp,
+                        lineHeight = 12.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -795,22 +826,23 @@ private fun StatusBox(
         modifier = modifier
             .fillMaxHeight()
             .background(Color(0xFF1E2227), RoundedCornerShape(4.dp))
-            .padding(horizontal = 3.dp, vertical = 2.dp)
+            .padding(horizontal = 4.dp, vertical = 4.dp)
     ) {
         Text(
             text = value,
             color = valueColor,
             fontSize = 14.sp,
-            lineHeight = 15.sp,
+            lineHeight = 16.sp,
             fontWeight = FontWeight.ExtraBold,
             maxLines = 1,
             softWrap = false
         )
+        Spacer(modifier = Modifier.height(1.dp))
         Text(
             text = label,
             color = Color(0xFFB0BEC5),
-            fontSize = 8.sp,
-            lineHeight = 10.sp,
+            fontSize = 9.sp,
+            lineHeight = 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false
@@ -834,13 +866,14 @@ private fun TouchControlsBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xFF121519))
-            .padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Left 3x2 Movement & Turn Pad
         Column(
-            modifier = Modifier.weight(1.22f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.weight(1.18f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -849,19 +882,22 @@ private fun TouchControlsBar(
                 HoldControlButton(
                     label = "↶ Otoč",
                     bgColor = Color(0xFF263238),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldTurnL
                 )
                 HoldControlButton(
                     label = "▲ Vpřed",
                     bgColor = Color(0xFF37474F),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldFwd
                 )
                 HoldControlButton(
                     label = "↷ Otoč",
                     bgColor = Color(0xFF263238),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldTurnR
                 )
             }
@@ -872,46 +908,51 @@ private fun TouchControlsBar(
                 HoldControlButton(
                     label = "◀ Úkrok",
                     bgColor = Color(0xFF263238),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldStrafeL
                 )
                 HoldControlButton(
                     label = "▼ Vzad",
                     bgColor = Color(0xFF37474F),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldBack
                 )
                 HoldControlButton(
                     label = "Úkrok ▶",
                     bgColor = Color(0xFF263238),
-                    modifier = Modifier.weight(1f).height(40.dp),
+                    fontSizeSp = 10,
+                    modifier = Modifier.weight(1f).defaultMinSize(minHeight = 42.dp),
                     onPressChanged = onHoldStrafeR
                 )
             }
         }
 
+        // Right Action & Fire Cluster (Equal 1:1 split on top so neither DVEŘE nor ZBRAŇ ever clips!)
         Column(
-            modifier = Modifier.weight(0.95f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier.weight(1.0f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .weight(1.12f)
-                        .height(40.dp)
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 42.dp)
                         .background(Color(0xFF1E88E5), RoundedCornerShape(8.dp))
                         .border(1.dp, Color(0xFF90CAF9), RoundedCornerShape(8.dp))
                         .clickable { onUseAction() }
+                        .padding(horizontal = 4.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "🖐️ DVEŘE",
+                        text = "🖐 DVEŘE",
                         color = Color.White,
                         fontSize = 11.sp,
-                        lineHeight = 12.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -920,17 +961,18 @@ private fun TouchControlsBar(
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .weight(0.88f)
-                        .height(40.dp)
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 42.dp)
                         .background(Color(0xFF455A64), RoundedCornerShape(8.dp))
                         .border(1.dp, Color(0xFF78909C), RoundedCornerShape(8.dp))
                         .clickable { onCycleWeapon() }
+                        .padding(horizontal = 4.dp, vertical = 6.dp)
                 ) {
                     Text(
                         text = "🔄 ZBRAŇ",
                         color = Color.White,
                         fontSize = 11.sp,
-                        lineHeight = 12.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         softWrap = false
@@ -942,7 +984,7 @@ private fun TouchControlsBar(
                 label = "🔥 PALBA",
                 bgColor = Color(0xFFD50000),
                 fontSizeSp = 13,
-                modifier = Modifier.fillMaxWidth().height(40.dp),
+                modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 42.dp),
                 onPressChanged = onFireHold
             )
         }
@@ -977,12 +1019,13 @@ private fun HoldControlButton(
                     }
                 )
             }
+            .padding(horizontal = 3.dp, vertical = 6.dp)
     ) {
         Text(
             text = label,
             color = Color.White,
             fontSize = fontSizeSp.sp,
-            lineHeight = (fontSizeSp + 2).sp,
+            lineHeight = (fontSizeSp + 3).sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
             maxLines = 1,
@@ -998,6 +1041,7 @@ private fun IntermissionScreen(
     onNextLevel: () -> Unit,
     onBackToMenu: () -> Unit
 ) {
+    val compactBtnPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
     val killPct = if (stats.totalMonsters > 0) (stats.killsCount * 100) / stats.totalMonsters else 100
     val itemPct = if (stats.totalItems > 0) (stats.itemsCount * 100) / stats.totalItems else 100
     val secretPct = if (stats.totalSecrets > 0) (stats.secretsCount * 100) / stats.totalSecrets else 100
@@ -1016,7 +1060,7 @@ private fun IntermissionScreen(
         Text(
             text = if (stats.isEpisodeCompleted) "🏆 EPIZODA DOKONČENA! 🏆" else "${stats.mapCode} DOKONČENO!",
             color = Color(0xFFFF2A00),
-            fontSize = 26.sp,
+            fontSize = 25.sp,
             fontWeight = FontWeight.ExtraBold,
             textAlign = TextAlign.Center
         )
@@ -1081,10 +1125,11 @@ private fun IntermissionScreen(
                     if (ok) savedNick = FirebaseLeaderboard.getSavedNick()
                 }
             },
+            contentPadding = compactBtnPadding,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E88E5)),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("☁️ Uložit výsledek do online žebříčku", fontWeight = FontWeight.Bold)
+            Text("☁ Uložit výsledek do online žebříčku", fontWeight = FontWeight.Bold)
         }
 
         if (saveStatus.isNotBlank()) {
@@ -1096,10 +1141,11 @@ private fun IntermissionScreen(
 
         Button(
             onClick = onNextLevel,
+            contentPadding = compactBtnPadding,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .defaultMinSize(minHeight = 52.dp)
         ) {
             val nextLabel = if (stats.isEpisodeCompleted) {
                 "🏆 ZOBRAZIT ONLINE ŽEBŘÍČEK VÍTĚZŮ"
@@ -1113,6 +1159,7 @@ private fun IntermissionScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Button(
             onClick = onBackToMenu,
+            contentPadding = compactBtnPadding,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -1127,8 +1174,8 @@ private fun StatRow(label: String, value: String) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(text = label, color = Color(0xFFB0BEC5), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text(text = value, color = Color(0xFFFFEA00), fontWeight = FontWeight.ExtraBold, fontSize = 13.sp)
+        Text(text = label, color = Color(0xFFB0BEC5), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(text = value, color = Color(0xFFFFEA00), fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
     }
 }
 
@@ -1137,6 +1184,7 @@ private fun CheatTerminalDialog(
     engine: DoomEngine,
     onDismiss: () -> Unit
 ) {
+    val compactBtnPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
     var codeInput by remember { mutableStateOf("") }
     var feedback by remember { mutableStateOf("Klikni na cheat nebo ho napiš ručně:") }
 
@@ -1158,9 +1206,9 @@ private fun CheatTerminalDialog(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "⌨️ TERMINÁL CHEATŮ DOOM I",
+                text = "⌨ TERMINÁL CHEATŮ DOOM I",
                 color = Color(0xFFFFD600),
-                fontSize = 18.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.ExtraBold
             )
             Spacer(modifier = Modifier.height(6.dp))
@@ -1184,6 +1232,7 @@ private fun CheatTerminalDialog(
                     for (pair in row) {
                         Button(
                             onClick = { feedback = engine.applyCheatCode(pair.first) },
+                            contentPadding = compactBtnPadding,
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
                             modifier = Modifier.weight(1f)
                         ) {
@@ -1197,7 +1246,7 @@ private fun CheatTerminalDialog(
             OutlinedTextField(
                 value = codeInput,
                 onValueChange = { codeInput = it },
-                label = { Text("Vlastní cheat (např. IDCLEV11 až IDCLEV19)") },
+                label = { Text("Vlastní cheat (např. IDCLEV11 až IDCLEV19)", fontSize = 12.sp) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -1212,6 +1261,7 @@ private fun CheatTerminalDialog(
                         feedback = engine.applyCheatCode(codeInput)
                         codeInput = ""
                     },
+                    contentPadding = compactBtnPadding,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
                     modifier = Modifier.weight(1f)
                 ) {
@@ -1219,6 +1269,7 @@ private fun CheatTerminalDialog(
                 }
                 Button(
                     onClick = onDismiss,
+                    contentPadding = compactBtnPadding,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
                     modifier = Modifier.weight(1f)
                 ) {
@@ -1236,9 +1287,10 @@ private fun LeaderboardScreen(
     lastTimeSec: Int,
     onBack: () -> Unit
 ) {
+    val compactBtnPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
     var selectedDiff by remember { mutableStateOf(initialDifficulty) }
     var showBestTime by remember { mutableStateOf(false) }
-    var entries by remember { mutableStateOf<List<LeaderboardEntry>>(emptyList()) }
+    var entries by remember { mutableStateOf(emptyList<LeaderboardEntry>()) }
     var loading by remember { mutableStateOf(true) }
 
     var savedNick by remember { mutableStateOf(FirebaseLeaderboard.getSavedNick()) }
@@ -1270,7 +1322,7 @@ private fun LeaderboardScreen(
         Text(
             text = "🏆 ONLINE ŽEBŘÍČEK REKORDŮ",
             color = Color(0xFFFFD600),
-            fontSize = 22.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.ExtraBold
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -1312,6 +1364,7 @@ private fun LeaderboardScreen(
         ) {
             Button(
                 onClick = { showBestTime = false },
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (!showBestTime) Color(0xFF1E88E5) else Color(0xFF37474F)
                 ),
@@ -1321,12 +1374,13 @@ private fun LeaderboardScreen(
             }
             Button(
                 onClick = { showBestTime = true },
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (showBestTime) Color(0xFF1E88E5) else Color(0xFF37474F)
                 ),
                 modifier = Modifier.weight(1f)
             ) {
-                Text("⏱️ Nejrychlejší čas", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+                Text("⏱ Nejrychlejší čas", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
             }
         }
 
@@ -1357,10 +1411,11 @@ private fun LeaderboardScreen(
                         }
                     }
                 },
+                contentPadding = compactBtnPadding,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF43A047)),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("☁️ Zapsat poslední skóre ($lastScore b.)", fontWeight = FontWeight.Bold, maxLines = 1)
+                Text("☁ Zapsat poslední skóre ($lastScore b.)", fontWeight = FontWeight.Bold, maxLines = 1)
             }
             if (statusMsg.isNotBlank()) {
                 Text(text = statusMsg, color = Color(0xFF00E676), fontSize = 12.sp)
@@ -1415,6 +1470,7 @@ private fun LeaderboardScreen(
         Spacer(modifier = Modifier.height(10.dp))
         Button(
             onClick = onBack,
+            contentPadding = compactBtnPadding,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF455A64)),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -1432,9 +1488,9 @@ private fun GuideAndSecretsScreen(onBack: () -> Unit) {
             .padding(16.dp)
     ) {
         Text(
-            text = "🕵️ PRŮVODCE SKRÝŠEMI A HERNÍ LOGIKOU DOOM I",
+            text = "🕵 PRŮVODCE SKRÝŠEMI A HERNÍ LOGIKOU DOOM I",
             color = Color(0xFFFFD600),
-            fontSize = 20.sp,
+            fontSize = 19.sp,
             fontWeight = FontWeight.ExtraBold
         )
         Spacer(modifier = Modifier.height(10.dp))
@@ -1465,6 +1521,7 @@ private fun GuideAndSecretsScreen(onBack: () -> Unit) {
         Spacer(modifier = Modifier.height(12.dp))
         Button(
             onClick = onBack,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD50000)),
             modifier = Modifier.fillMaxWidth()
         ) {
